@@ -1,0 +1,10 @@
+{
+  "agent_name": "data-agent",
+  "run_id": "run-timeout-003",
+  "steps": [
+    {"type": "llm_call", "name": "plan", "status": "success", "timestamp": "2026-01-01T12:00:00Z", "duration_ms": 800},
+    {"type": "tool_call", "name": "run_sql_query", "status": "success", "timestamp": "2026-01-01T12:00:01Z", "duration_ms": 15000, "timeout_ms": 10000, "input": {"sql": "SELECT * FROM big_table"}},
+    {"type": "tool_call", "name": "fetch_report", "status": "timeout", "timestamp": "2026-01-01T12:00:12Z", "duration_ms": 30000}
+  ]
+}
+

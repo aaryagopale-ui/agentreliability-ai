@@ -1,0 +1,46 @@
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Python packaging & builds
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Test caches & artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+test-results/
+
+# Node.js
+node_modules/
+.vite/
+
+# Databases & local stores
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

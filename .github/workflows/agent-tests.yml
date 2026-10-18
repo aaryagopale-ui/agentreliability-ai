@@ -1,0 +1,54 @@
+name: AgentReliability Regression Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      test_target:
+        description: 'Test file or directory to execute'
+        required: false
+        default: './demo_project/agent-tests/test_pass.json'
+
+# Least privilege: only read contents to clone the repository
+permissions:
+  contents: read
+
+jobs:
+  agent-regression-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ./sdk
+
+      - name: Run AgentReliability regression tests
+        id: run-tests
+        run: |
+          TARGET="${{ inputs.test_target || './demo_project/agent-tests/test_pass.json' }}"
+          echo "Running regression tests on: $TARGET"
+          agentreliability test \
+            --project "$TARGET" \
+            --output ./test-results/results.json \
+            --baseline ./demo_project/agent-tests/baseline.json
+
+      - name: Upload test results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentreliability-results
+          path: ./test-results/results.json
+          retention-days: 14

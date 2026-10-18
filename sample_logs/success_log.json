@@ -1,0 +1,10 @@
+{
+  "agent_name": "support-bot",
+  "run_id": "run-success-001",
+  "steps": [
+    {"type": "llm_call", "name": "plan", "status": "success", "timestamp": "2026-01-01T10:00:00Z", "duration_ms": 850, "input": "Where is my order #123?", "output": "I should look up the order."},
+    {"type": "tool_call", "name": "lookup_order", "status": "success", "timestamp": "2026-01-01T10:00:01Z", "duration_ms": 120, "timeout_ms": 5000, "input": {"order_id": 123}, "output": {"state": "shipped"}},
+    {"type": "llm_call", "name": "respond", "status": "success", "timestamp": "2026-01-01T10:00:02Z", "duration_ms": 640, "output": "Your order has shipped."}
+  ]
+}
+

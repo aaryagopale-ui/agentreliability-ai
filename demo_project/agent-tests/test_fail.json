@@ -1,0 +1,28 @@
+{
+  "name": "support_agent_tool_failure",
+  "agent_name": "demo_support_agent",
+  "steps": [
+    {
+      "type": "tool_call",
+      "name": "lookup_user",
+      "status": "success",
+      "duration_ms": 12,
+      "input": {"user_id": 99},
+      "output": {"name": "Bob"}
+    },
+    {
+      "type": "tool_call",
+      "name": "check_subscription",
+      "status": "failed",
+      "duration_ms": 110,
+      "error": "HTTP 500: Database connection pool exhausted"
+    }
+  ],
+  "expected": {
+    "status": "success",
+    "tool_sequence": ["lookup_user", "check_subscription"],
+    "final_output": "User Bob is active.",
+    "error_conditions": []
+  }
+}
+

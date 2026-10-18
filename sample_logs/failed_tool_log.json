@@ -1,0 +1,11 @@
+{
+  "agent_name": "research-agent",
+  "run_id": "run-failed-002",
+  "steps": [
+    {"type": "llm_call", "name": "plan", "status": "success", "timestamp": "2026-01-01T11:00:00Z", "duration_ms": 900, "output": "Search the web for pricing."},
+    {"type": "tool_call", "name": "search_web", "status": "failed", "timestamp": "2026-01-01T11:00:01Z", "duration_ms": 300, "input": {"query": "pricing"}, "error": "HTTP 503 Service Unavailable"},
+    {"type": "llm_call", "name": "summarize", "status": "success", "timestamp": "2026-01-01T11:00:02Z", "duration_ms": 700, "output": "I could not find pricing."},
+    {"type": "error", "name": "agent_loop", "status": "error", "timestamp": "2026-01-01T11:00:03Z", "error": "Agent gave up after tool failure"}
+  ]
+}
+
