@@ -4,21 +4,36 @@ import sqlite3
 import pytest
 from starlette.testclient import TestClient
 
-from app.database import init_db, db_path
+from app.database import (
+    PostgresConnectionWrapper,
+    connect,
+    get_database_engine,
+    get_database_url,
+    init_db,
+    is_postgres,
+)
+from tests.test_postgres_integration import PostgresHarnessConnection
 
 
 @pytest.fixture
 def prod_client(tmp_path, monkeypatch):
     """Create a client configured with production environment variables and an isolated database."""
-    test_db = tmp_path / "test_prod.db"
-    monkeypatch.setenv("AGENTRELIABILITY_DB", str(test_db))
+    test_db = str(tmp_path / "test_prod.db")
+
+    def mock_pg_connect(*args, **kwargs):
+        r = sqlite3.connect(test_db)
+        h = PostgresHarnessConnection(r)
+        return PostgresConnectionWrapper(h)
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://beta_user:beta_pass@ep-cool-fog.neon.tech/neondb?sslmode=require")
     monkeypatch.setenv("AGENTRELIABILITY_ENV", "production")
     monkeypatch.setenv("AGENTRELIABILITY_COOKIE_SAMESITE", "none")
     monkeypatch.setenv("AGENTRELIABILITY_COOKIE_SECURE", "true")
     monkeypatch.setenv("AGENTRELIABILITY_ALLOWED_ORIGINS", "https://agentreliability.vercel.app,https://app.agentreliability.com")
     monkeypatch.delenv("AGENTRELIABILITY_ALLOWED_ORIGIN_REGEX", raising=False)
+    monkeypatch.setattr("app.database._CONNECT_HOOK", mock_pg_connect)
 
-    # Initialize isolated database schema
+    # Initialize isolated database schema via Postgres migrations
     init_db()
 
     # Re-import main to rebuild middleware with the production environment variables
@@ -144,8 +159,9 @@ def test_production_logout_cookie_clearing(prod_client):
     assert "secure" in csrf_cookie.lower()
 
 
-def test_production_database_path_resolution(tmp_path, monkeypatch):
-    """Verify AGENTRELIABILITY_DB=/var/data/agentreliability.db is respected."""
-    mock_disk_path = str(tmp_path / "mock_var_data" / "agentreliability.db")
-    monkeypatch.setenv("AGENTRELIABILITY_DB", mock_disk_path)
-    assert db_path() == os.path.abspath(mock_disk_path)
+def test_production_database_url_requirement(monkeypatch):
+    """Verify production requires DATABASE_URL and detects engine."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://neon_user:neon_pass@ep-cool-fog.neon.tech/neondb?sslmode=require")
+    assert is_postgres() is True
+    assert get_database_engine() == "postgres"
+    assert "ep-cool-fog.neon.tech" in get_database_url()

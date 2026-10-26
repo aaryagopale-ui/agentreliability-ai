@@ -5,6 +5,12 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
 
+try:
+    import psycopg
+    DB_INTEGRITY_ERRORS = (sqlite3.IntegrityError, psycopg.IntegrityError)
+except ImportError:
+    DB_INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
+
 from .database import connect
 
 
@@ -37,7 +43,7 @@ def create_user(email: str, password_hash: str, name: str) -> Optional[dict]:
                 "name": clean_name,
                 "created_at": now,
             }
-        except sqlite3.IntegrityError:
+        except DB_INTEGRITY_ERRORS:
             # Duplicate email address
             return None
 

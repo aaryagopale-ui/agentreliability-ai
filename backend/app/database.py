@@ -1,22 +1,59 @@
-"""SQLite storage using Python's built-in sqlite3 with migrations and foreign key support."""
+"""Unified database storage module supporting SQLite (local) and PostgreSQL (Neon/production).
+
+Guarantees:
+1. Seamless local development with SQLite (`AGENTRELIABILITY_DB` or local default).
+2. Production reliability with PostgreSQL via `DATABASE_URL`.
+3. Never silently falls back to ephemeral SQLite in production mode.
+4. Parameterized query translation, RETURNING id emulation, and row mapping parity.
+"""
+from __future__ import annotations
+
 import json
+import logging
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
+from typing import Any, List, Optional, Tuple
 
-from .migrations import run_migrations
+from .migrations.runner import run_migrations
+from .migrations.postgres_runner import run_postgres_migrations
+
+logger = logging.getLogger("agentreliability.database")
 
 DEFAULT_DB = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "agentreliability.db"))
 
+TABLES_WITH_ID = {
+    "users", "projects", "api_keys", "sessions", "password_resets",
+    "executions", "test_cases", "test_runs", "trace_events", "ci_runs",
+    "baselines", "baseline_versions",
+}
+
+
+def get_database_url() -> Optional[str]:
+    """Retrieve raw DATABASE_URL from environment if set and non-empty."""
+    url = os.environ.get("DATABASE_URL")
+    if url and url.strip():
+        return url.strip()
+    return None
+
+
+def is_postgres() -> bool:
+    """Return True if configured to use PostgreSQL."""
+    return get_database_url() is not None or os.environ.get("AGENTRELIABILITY_ENGINE") == "postgres"
+
+
+def get_database_engine() -> str:
+    """Return active engine name: 'postgres' or 'sqlite'."""
+    return "postgres" if is_postgres() else "sqlite"
+
 
 def db_path() -> str:
-    """Resolve database path from environment, local config, or installation default."""
-    # 1. Tests or dev runner set AGENTRELIABILITY_DB explicitly
+    """Resolve SQLite database path from environment, local config, or installation default."""
     env_db = os.environ.get("AGENTRELIABILITY_DB")
     if env_db and env_db.strip():
         return os.path.abspath(env_db.strip())
 
-    # 2. Check local .agentreliability.json in workspace root or current directory
     try:
         backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         workspace_dir = os.path.dirname(backend_dir)
@@ -30,11 +67,199 @@ def db_path() -> str:
     except Exception:
         pass
 
-    # 3. Fallback to default path relative to this backend package
     return DEFAULT_DB
 
 
-def connect() -> sqlite3.Connection:
+# -----------------------------------------------------------------------------
+# Unified Row & Query Translation
+# -----------------------------------------------------------------------------
+
+class UnifiedRow(dict):
+    """Row wrapper that supports both key-based access ('name') and index-based access (0),
+    as well as .keys() and dict() conversions."""
+    def __init__(self, mapping: dict, seq: tuple | None = None):
+        super().__init__(mapping)
+        self._seq = tuple(seq) if seq is not None else tuple(mapping.values())
+
+    def __getitem__(self, item: Any) -> Any:
+        if isinstance(item, int):
+            return self._seq[item]
+        return super().__getitem__(item)
+
+
+def translate_query_for_postgres(sql: str) -> Tuple[str, bool]:
+    """Translates SQLite-compatible SQL into standard PostgreSQL SQL.
+    Returns (translated_sql, expects_returning_id).
+    """
+    s = sql.strip()
+
+    # 1. INSERT OR IGNORE INTO <table> ... -> INSERT INTO <table> ... ON CONFLICT DO NOTHING
+    if re.match(r"(?i)^INSERT\s+OR\s+IGNORE\s+INTO\s+", s):
+        s = re.sub(r"(?i)^INSERT\s+OR\s+IGNORE\s+INTO\s+", "INSERT INTO ", s)
+        if "ON CONFLICT" not in s.upper():
+            s = s + " ON CONFLICT DO NOTHING"
+
+    # 2. COLLATE NOCASE -> remove (Postgres matches email case-sensitively or through Lower)
+    s = re.sub(r"(?i)\s+COLLATE\s+NOCASE", "", s)
+
+    # 3. Replace ? placeholders with %s (ignoring inside string literals)
+    parts = re.split(r"('[^']*'|\"[^\"]*\")", s)
+    for i in range(len(parts)):
+        if not (parts[i].startswith("'") or parts[i].startswith('"')):
+            parts[i] = parts[i].replace("?", "%s")
+    s = "".join(parts)
+
+    # 4. If INSERT INTO on a table with an autoincrement ID and no RETURNING clause, append RETURNING id
+    expects_returning = False
+    m = re.match(r"(?i)^INSERT\s+INTO\s+([a-zA-Z0-9_]+)", s)
+    if m:
+        table_name = m.group(1).lower()
+        if table_name in TABLES_WITH_ID and "RETURNING" not in s.upper() and "DO NOTHING" not in s.upper():
+            s = s + " RETURNING id"
+            expects_returning = True
+
+    return s, expects_returning
+
+
+class PostgresCursorWrapper:
+    """Cursor wrapper providing sqlite3.Cursor parity over psycopg."""
+    def __init__(self, raw_cur: Any):
+        self._cur = raw_cur
+        self.lastrowid: Optional[int] = None
+        self._cached_returning_row: Any = None
+
+    @property
+    def rowcount(self) -> int:
+        return self._cur.rowcount
+
+    @property
+    def description(self) -> Any:
+        return self._cur.description
+
+    def execute(self, sql: str, params: tuple | list | None = None) -> PostgresCursorWrapper:
+        translated_sql, expects_returning = translate_query_for_postgres(sql)
+        if params is not None:
+            self._cur.execute(translated_sql, params)
+        else:
+            self._cur.execute(translated_sql)
+
+        if expects_returning:
+            row = self._cur.fetchone()
+            if row is not None:
+                self.lastrowid = row[0]
+                self._cached_returning_row = row
+        return self
+
+    def fetchone(self) -> Optional[UnifiedRow]:
+        if self._cached_returning_row is not None:
+            row = self._cached_returning_row
+            self._cached_returning_row = None
+            return self._wrap_row(row)
+        row = self._cur.fetchone()
+        return self._wrap_row(row) if row is not None else None
+
+    def fetchall(self) -> List[UnifiedRow]:
+        rows = self._cur.fetchall()
+        return [self._wrap_row(r) for r in rows]
+
+    def _wrap_row(self, row: Any) -> Optional[UnifiedRow]:
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return UnifiedRow(row, tuple(row.values()))
+        if self._cur.description:
+            col_names = [col.name for col in self._cur.description]
+            mapping = dict(zip(col_names, row))
+            return UnifiedRow(mapping, tuple(row))
+        return row
+
+    def __iter__(self):
+        for row in self._cur:
+            yield self._wrap_row(row)
+
+    def close(self) -> None:
+        self._cur.close()
+
+
+class PostgresConnectionWrapper:
+    """Connection wrapper providing sqlite3.Connection parity over psycopg."""
+    def __init__(self, raw_conn: Any):
+        self._conn = raw_conn
+
+    def cursor(self) -> PostgresCursorWrapper:
+        return PostgresCursorWrapper(self._conn.cursor())
+
+    def execute(self, sql: str, params: tuple | list | None = None) -> PostgresCursorWrapper:
+        cur = self.cursor()
+        return cur.execute(sql, params)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def __enter__(self) -> PostgresConnectionWrapper:
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return self._conn.__exit__(exc_type, exc_val, exc_tb)
+
+
+# -----------------------------------------------------------------------------
+# Connection & Initialization
+# -----------------------------------------------------------------------------
+
+_CONNECT_HOOK = None
+
+
+def set_connect_hook(hook: Any) -> None:
+    """Register a custom connection factory hook (primarily for testing)."""
+    global _CONNECT_HOOK
+    _CONNECT_HOOK = hook
+
+
+def get_connect_hook() -> Any:
+    return _CONNECT_HOOK
+
+
+def connect() -> Any:
+    """Establish and return database connection (PostgreSQL or SQLite)."""
+    if _CONNECT_HOOK is not None:
+        return _CONNECT_HOOK()
+
+    is_production = os.environ.get("AGENTRELIABILITY_ENV") == "production"
+    db_url = get_database_url()
+
+    # Requirement 5: Never silently fall back to ephemeral SQLite in production
+    if is_production and not db_url and not os.environ.get("AGENTRELIABILITY_DB"):
+        raise RuntimeError(
+            "DATABASE_URL environment variable is required in production mode. "
+            "Silently falling back to ephemeral SQLite in production is strictly prohibited "
+            "to prevent data loss on container restart."
+        )
+
+    if db_url or is_postgres():
+        if not db_url:
+            raise RuntimeError("PostgreSQL engine requested but DATABASE_URL is not set.")
+
+        # Normalize postgres:// to postgresql://
+        clean_url = db_url
+        if clean_url.startswith("postgres://"):
+            clean_url = "postgresql://" + clean_url[len("postgres://"):]
+
+        try:
+            import psycopg
+            raw_conn = psycopg.connect(clean_url, connect_timeout=15)
+            return PostgresConnectionWrapper(raw_conn)
+        except Exception as exc:
+            raise RuntimeError(f"PostgreSQL connection failed for DATABASE_URL: {exc}") from exc
+
+    # Local development SQLite connection
     path = db_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     conn = sqlite3.connect(path, timeout=30.0)
@@ -49,9 +274,17 @@ def connect() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+    """Initialize database tables and run versioned migrations."""
     with connect() as conn:
-        run_migrations(conn)
+        if is_postgres():
+            run_postgres_migrations(conn)
+        else:
+            run_migrations(conn)
 
+
+# -----------------------------------------------------------------------------
+# Execution Store Helpers
+# -----------------------------------------------------------------------------
 
 def save_execution(log: dict, analysis: dict, project_id: int = 1) -> int:
     with connect() as conn:
@@ -74,7 +307,7 @@ def save_execution(log: dict, analysis: dict, project_id: int = 1) -> int:
         return cur.lastrowid
 
 
-def _summary(row: sqlite3.Row) -> dict:
+def _summary(row: Any) -> dict:
     d = {k: row[k] for k in ("id", "agent_name", "run_id", "status", "step_count", "failure_count", "created_at")}
     if "project_id" in row.keys():
         d["project_id"] = row["project_id"]

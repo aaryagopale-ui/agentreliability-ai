@@ -13,7 +13,7 @@ import secrets
 from datetime import datetime, timezone
 from typing import Optional
 
-from .database import connect
+from .database import connect, is_postgres
 
 KEY_PREFIX = "ar_"
 
@@ -41,6 +41,9 @@ def hash_key(key: str) -> str:
 
 
 def init_tables() -> None:
+    # Tables are managed via versioned database migrations (app.migrations)
+    if is_postgres():
+        return
     with connect() as conn:
         conn.execute(
             """CREATE TABLE IF NOT EXISTS trace_events (
