@@ -1,8 +1,8 @@
-# Virtual environments
-.venv/
-venv/
-env/
-ENV/
+# Virtual environments & symlinks
+.venv*
+*venv*
+env*
+ENV*
 
 # Python cache & bytecode
 __pycache__/
@@ -21,13 +21,20 @@ dist/
 .coverage
 htmlcov/
 test-results/
+results.json
+failure-results.json
 
 # Node.js
 node_modules/
 .vite/
+dist/
 
 # Databases & local stores
 *.db
+*.db-shm
+*.db-wal
+*.db*bak*
+*.bak
 *.sqlite
 *.sqlite3
 
@@ -35,9 +42,17 @@ node_modules/
 .env
 .env.*
 !.env.example
+!.env.*.example
+*.pem
+*.key
+*.cert
+*.crt
+.agentreliability.json
+.agentreliability/
 
 # Logs
 *.log
+*.jsonl
 
 # OS & Editor files
 .DS_Store

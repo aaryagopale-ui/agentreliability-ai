@@ -4,15 +4,31 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app import database, project_store
 from app.main import app
+from app.migrations.runner import run_migrations
+from app.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME
 
 SAMPLES = Path(__file__).resolve().parents[2] / "sample_logs"
 
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENTRELIABILITY_DB", str(tmp_path / "test.db"))
+    db_file = str(tmp_path / "test.db")
+    monkeypatch.setenv("AGENTRELIABILITY_DB", db_file)
+    monkeypatch.setenv("AGENTRELIABILITY_ENV", "test")
+    with database.connect() as conn:
+        run_migrations(conn)
+
     with TestClient(app) as c:
+        res = c.post("/api/auth/register", json={"email": "alice@example.com", "password": "Password123!", "name": "Alice"})
+        user = res.json()
+        csrf = res.cookies[CSRF_COOKIE_NAME]
+        c.headers[CSRF_HEADER_NAME] = csrf
+        projs = project_store.list_user_projects(user["id"])
+        if projs:
+            project_store.archive_project(projs[0]["id"], user["id"])
+        project_store.claim_legacy_project(1, user["id"])
         yield c
 
 

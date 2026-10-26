@@ -12,6 +12,10 @@ dependencies = []   # standard library only, on purpose
 
 [project.optional-dependencies]
 dev = ["pytest"]
+crewai = ["crewai>=0.80.0"]
+langchain = ["langchain-core>=0.3.0"]
+langgraph = ["langchain-core>=0.3.0", "langgraph>=0.2.0"]
+all = ["crewai>=0.80.0", "langchain-core>=0.3.0", "langgraph>=0.2.0"]
 
 [project.scripts]
 agentreliability = "agentreliability.cli:main"

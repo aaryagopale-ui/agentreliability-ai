@@ -1,15 +1,17 @@
 """Deterministic Demo Agent for testing and verifying AgentReliability monitoring.
 
-Can generate 4 deterministic scenarios:
-  1. success: smooth multi-tool execution
-  2. tool_failure: external tool raises an error (HTTP 500)
-  3. timeout: slow tool exceeds timeout threshold
-  4. exception: agent encounters an unexpected logic error
+Can generate 5 deterministic scenarios:
+  1. success: smooth multi-tool execution (establishes Golden Baseline)
+  2. regression: agent omits search_docs tool (triggers breaking regression verdict)
+  3. tool_failure: external tool raises an error (HTTP 503)
+  4. timeout: slow tool exceeds timeout threshold
+  5. exception: agent encounters an unexpected logic error
 
 Usage:
   python demo_agent.py [scenario]
   e.g.:
   python demo_agent.py success
+  python demo_agent.py regression
   python demo_agent.py tool_failure
   python demo_agent.py timeout
   python demo_agent.py exception
@@ -28,12 +30,12 @@ if sdk_path not in sys.path:
 from agentreliability import AgentMonitor
 
 # Initialize monitor using environment or local default
-endpoint = os.environ.get("AGENTRELIABILITY_ENDPOINT", "http://127.0.0.1:8000")
+endpoint = os.environ.get("AGENTRELIABILITY_ENDPOINT", "http://127.0.0.1:8001")
 api_key = os.environ.get("AGENTRELIABILITY_API_KEY", "")
 
 if not api_key:
-    # If no key in env, see if we can find or generate one using the backend CLI
-    print("Warning: AGENTRELIABILITY_API_KEY not set. Set it before running to send traces.")
+    # If no key in env, notify user
+    print("Notice: AGENTRELIABILITY_API_KEY not set. Set it before running to send traces to project.")
 
 monitor = AgentMonitor(
     endpoint=endpoint,
@@ -84,6 +86,15 @@ def run_demo_agent(scenario: str, user_id: int = 101):
             "sources": docs["results"]
         }
         
+    elif scenario == "regression":
+        print("[Agent] Running regression scenario: omitting required tool 'search_docs'...")
+        print("[Agent] Notice: When compared against the Golden Baseline, this triggers a BREAKING REGRESSION.")
+        return {
+            "status": "partial",
+            "message": "Report generated without search documentation.",
+            "sources": []
+        }
+
     elif scenario == "tool_failure":
         print("[Agent] Calling external_weather_api...")
         weather = external_weather_api("San Francisco")
@@ -102,14 +113,16 @@ def run_demo_agent(scenario: str, user_id: int = 101):
         return {"calc": val}
         
     else:
-        raise ValueError(f"Unknown scenario: {scenario}. Choose from: success, tool_failure, timeout, exception")
+        raise ValueError(
+            f"Unknown scenario: {scenario}. Choose from: success, regression, tool_failure, timeout, exception, all"
+        )
 
 def main():
     scenario = sys.argv[1] if len(sys.argv) > 1 else "success"
     
     scenarios_to_run = [scenario]
     if scenario == "all":
-        scenarios_to_run = ["success", "tool_failure", "timeout", "exception"]
+        scenarios_to_run = ["success", "regression", "tool_failure", "timeout", "exception"]
         
     for sc in scenarios_to_run:
         try:

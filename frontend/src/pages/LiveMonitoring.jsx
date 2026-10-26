@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createTestFromTrace, getTraceExecution, listTraceAgents, listTraceExecutions } from "../api.js";
 import { Badge, Button, Card, Empty, ErrorBox, PageTitle, StatusBadge, useAsyncAction } from "../ui.jsx";
+import TraceExecutionTimeline from "../components/TraceExecutionTimeline.jsx";
 
 const FAILURE_LABELS = {
   timeout: "Timeout",
@@ -46,8 +47,10 @@ export default function LiveMonitoring({ goTo }) {
       setTotal(res.total);
       setLastRefreshed(new Date());
       setLoadError(null);
-    } catch {
-      setLoadError("Cannot reach the backend or fetch trace executions. Is backend running on port 8000?");
+    } catch (err) {
+      if (err?.status !== 401) {
+        setLoadError(err?.message || "Cannot fetch trace executions.");
+      }
     }
   }, [agentFilter, statusFilter, timeFilter]);
 
@@ -186,7 +189,13 @@ export default function LiveMonitoring({ goTo }) {
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <p className="truncate font-medium text-slate-100">{x.agent_name}</p>
-                          <Badge tone="gray">Live</Badge>
+                          {x.metadata?.synthetic_demo || x.execution_id?.startsWith("demo-") ? (
+                            <span className="rounded bg-indigo-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-indigo-300 border border-indigo-500/30">
+                              Demo
+                            </span>
+                          ) : (
+                            <Badge tone="gray">Live</Badge>
+                          )}
                         </div>
                         <p className="truncate text-xs font-mono text-slate-500 mt-0.5">
                           {x.execution_id.slice(0, 12)}…
@@ -212,146 +221,18 @@ export default function LiveMonitoring({ goTo }) {
           )}
         </div>
 
-        {/* Detailed Timeline & Inspector */}
+        {/* Detailed Timeline, Waterfall, & Debugger Inspector */}
         <Card className="lg:col-span-2">
           {!detail ? (
-            <Empty>Select an execution from the list to view its real execution timeline, captured inputs/outputs, and tool calls.</Empty>
+            <Empty>Select an execution from the list to view its real execution timeline, waterfall view, captured inputs/outputs, and tool calls.</Empty>
           ) : (
-            <div className="space-y-6">
-              {/* Header */}
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
-                <div>
-                  <div className="flex items-center gap-3">
-                    <h2 className="text-xl font-bold text-slate-100">{detail.agent_name}</h2>
-                    <StatusBadge status={detail.status} />
-                    <Badge tone="green">Recorded Real Execution</Badge>
-                  </div>
-                  <p className="mt-1 text-xs font-mono text-slate-400">
-                    Execution ID: {detail.execution_id}
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    Started: {new Date(detail.started_at).toLocaleString()}
-                    {detail.duration_ms != null && ` · Total: ${detail.duration_ms.toFixed(1)} ms`}
-                  </p>
-                </div>
-                <Button
-                  onClick={handleCreateTest}
-                  disabled={genTest.busy || detail.status === "running"}
-                >
-                  {genTest.busy ? "Creating…" : "Create Test Case"}
-                </Button>
-              </div>
-
-              <ErrorBox error={genTest.error} />
-
-              {testNotice && (
-                <div className="rounded-lg bg-emerald-500/10 p-3 text-sm text-emerald-300 ring-1 ring-emerald-500/30">
-                  Test case “<strong>{testNotice.name}</strong>” created in SQLite!{" "}
-                  <button className="underline font-semibold" onClick={() => goTo("tests")}>
-                    Go to Test Cases to Replay
-                  </button>
-                </div>
-              )}
-
-              {/* Error Callout if execution failed */}
-              {detail.status === "failed" && (
-                <div className="rounded-lg bg-red-500/10 p-4 ring-1 ring-red-500/30 space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-red-300">
-                      {FAILURE_LABELS[detail.failure_kind] || "Failure Detected"}
-                    </span>
-                    {detail.error_type && (
-                      <span className="rounded bg-red-900/50 px-2 py-0.5 text-xs font-mono text-red-200">
-                        {detail.error_type}
-                      </span>
-                    )}
-                  </div>
-                  {detail.error_message && (
-                    <p className="text-sm text-red-200 mt-1 font-mono break-words">
-                      {detail.error_message}
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* Input / Output overview */}
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="rounded-lg bg-slate-950 p-3 ring-1 ring-slate-800">
-                  <span className="text-xs font-semibold uppercase text-slate-400">Captured Agent Input</span>
-                  <pre className="mt-2 text-xs text-slate-300 max-h-40 overflow-auto">
-                    {detail.input ? JSON.stringify(detail.input, null, 2) : "(Input capture disabled or None)"}
-                  </pre>
-                </div>
-                <div className="rounded-lg bg-slate-950 p-3 ring-1 ring-slate-800">
-                  <span className="text-xs font-semibold uppercase text-slate-400">Captured Agent Output</span>
-                  <pre className="mt-2 text-xs text-slate-300 max-h-40 overflow-auto">
-                    {detail.output ? JSON.stringify(detail.output, null, 2) : "(Output capture disabled or None)"}
-                  </pre>
-                </div>
-              </div>
-
-              {/* Tool Calls & Execution Timeline */}
-              <div>
-                <h3 className="mb-3 font-semibold text-slate-200">
-                  Tool-Call History ({detail.tool_calls.length})
-                </h3>
-                {detail.tool_calls.length === 0 ? (
-                  <p className="text-xs text-slate-500 italic">No tool calls recorded for this execution.</p>
-                ) : (
-                  <ol className="relative space-y-4 border-l-2 border-slate-700 pl-6">
-                    {detail.tool_calls.map((t, idx) => {
-                      const isErr = t.status !== "success";
-                      return (
-                        <li key={t.call_id} className="relative">
-                          <span
-                            className={`absolute -left-[31px] top-1.5 h-3 w-3 rounded-full ring-4 ring-slate-900 ${
-                              isErr ? "bg-red-500" : "bg-emerald-500"
-                            }`}
-                          />
-                          <div
-                            className={`rounded-lg bg-slate-800/60 p-3 text-sm ring-1 ${
-                              isErr ? "ring-red-500/40" : "ring-slate-700"
-                            }`}
-                          >
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-semibold text-slate-100">
-                                {idx + 1}. {t.tool_name}
-                              </span>
-                              <Badge tone={isErr ? "red" : "green"}>{t.status}</Badge>
-                              {t.duration_ms != null && (
-                                <span className="ml-auto text-xs text-slate-400">
-                                  {t.duration_ms.toFixed(1)} ms
-                                </span>
-                              )}
-                            </div>
-                            {t.started_at && (
-                              <p className="mt-1 text-xs text-slate-500">
-                                {new Date(t.started_at).toLocaleTimeString()}
-                              </p>
-                            )}
-                            {t.error_message && (
-                              <p className="mt-1 text-xs text-red-300 font-mono">
-                                {t.error_type ? `[${t.error_type}] ` : ""}{t.error_message}
-                              </p>
-                            )}
-                            {(t.input != null || t.output != null) && (
-                              <details className="mt-2 text-xs text-slate-400">
-                                <summary className="cursor-pointer text-slate-400 hover:text-slate-200">
-                                  Inspect Tool Payload
-                                </summary>
-                                <pre className="mt-1 overflow-x-auto rounded bg-slate-950 p-2 text-slate-300">
-                                  {JSON.stringify({ input: t.input, output: t.output }, null, 2)}
-                                </pre>
-                              </details>
-                            )}
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ol>
-                )}
-              </div>
-            </div>
+            <TraceExecutionTimeline
+              detail={detail}
+              onCreateTest={handleCreateTest}
+              isCreatingTest={genTest.busy}
+              testNotice={testNotice}
+              goTo={goTo}
+            />
           )}
         </Card>
       </div>

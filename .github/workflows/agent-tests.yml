@@ -10,9 +10,9 @@ on:
       test_target:
         description: 'Test file or directory to execute'
         required: false
-        default: './demo_project/agent-tests/test_pass.json'
+        default: './demo_project/agent-tests'
 
-# Least privilege: only read contents to clone the repository
+# Least privilege: only read contents to clone repository
 permissions:
   contents: read
 
@@ -37,13 +37,28 @@ jobs:
 
       - name: Run AgentReliability regression tests
         id: run-tests
+        env:
+          # Optional secrets for uploading results to remote AgentReliability backend
+          AGENTRELIABILITY_ENDPOINT: ${{ secrets.AGENTRELIABILITY_ENDPOINT }}
+          AGENTRELIABILITY_API_KEY: ${{ secrets.AGENTRELIABILITY_API_KEY }}
         run: |
-          TARGET="${{ inputs.test_target || './demo_project/agent-tests/test_pass.json' }}"
+          TARGET="${{ inputs.test_target || './demo_project/agent-tests' }}"
           echo "Running regression tests on: $TARGET"
+          
+          # Build upload argument only if both endpoint and API key are configured
+          UPLOAD_FLAG=""
+          if [ -n "$AGENTRELIABILITY_ENDPOINT" ] && [ -n "$AGENTRELIABILITY_API_KEY" ]; then
+            echo "Remote endpoint configured. Will attempt upload."
+            UPLOAD_FLAG="--upload"
+          else
+            echo "Running purely offline. Remote upload skipped (no secrets configured)."
+          fi
+
           agentreliability test \
             --project "$TARGET" \
             --output ./test-results/results.json \
-            --baseline ./demo_project/agent-tests/baseline.json
+            --baseline ./demo_project/agent-tests/baseline.json \
+            $UPLOAD_FLAG
 
       - name: Upload test results artifact
         if: always()
@@ -52,3 +67,4 @@ jobs:
           name: agentreliability-results
           path: ./test-results/results.json
           retention-days: 14
+

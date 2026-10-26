@@ -14,7 +14,11 @@ export default function CITesting() {
         setRuns(data);
         setError(null);
       })
-      .catch(() => setError("Cannot connect to backend to fetch CI runs. Is it running on port 8000?"));
+      .catch((err) => {
+        if (err?.status !== 401) {
+          setError(err?.message || "Cannot connect to backend to fetch CI runs.");
+        }
+      });
   };
 
   useEffect(() => {

@@ -3,19 +3,33 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
+from app import database, project_store, trace_store
 from app.main import app
-from app import trace_store
+from app.migrations.runner import run_migrations
+from app.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENTRELIABILITY_DB", str(tmp_path / "test.db"))
+    db_file = str(tmp_path / "test.db")
+    monkeypatch.setenv("AGENTRELIABILITY_DB", db_file)
+    monkeypatch.setenv("AGENTRELIABILITY_ENV", "test")
+    with database.connect() as conn:
+        run_migrations(conn)
+
     with TestClient(app) as c:
+        res = c.post("/api/auth/register", json={"email": "alice@example.com", "password": "Password123!", "name": "Alice"})
+        user = res.json()
+        csrf = res.cookies[CSRF_COOKIE_NAME]
+        c.headers[CSRF_HEADER_NAME] = csrf
+        projs = project_store.list_user_projects(user["id"])
+        c.user_id = user["id"]
+        c.project_id = projs[0]["id"]
         yield c
 
 @pytest.fixture()
 def project_key(client):
-    from app.create_key import create_key
-    return create_key("test-project")
+    _, raw_key = project_store.create_api_key(client.project_id, "Trace Key")
+    return raw_key
 
 def test_trace_auth_required(client):
     r = client.post("/api/v1/traces/events", json={"events": []})
@@ -26,6 +40,34 @@ def test_trace_auth_invalid_key(client):
     r = client.post("/api/v1/traces/events", headers={"X-API-Key": "ar_invalid_key"}, json={"events": []})
     assert r.status_code == 401
     assert "Invalid API key" in r.json()["detail"]
+
+def test_api_key_verify_endpoint(client, project_key):
+    # 1. Missing key
+    r_missing = client.get("/api/v1/auth/verify")
+    assert r_missing.status_code == 401
+    assert "Missing API key" in r_missing.json()["detail"]
+
+    # 2. Invalid key
+    r_invalid = client.get("/api/v1/auth/verify", headers={"X-API-Key": "ar_nonexistent_key_12345"})
+    assert r_invalid.status_code == 401
+    assert "Invalid API key" in r_invalid.json()["detail"]
+
+    # 3. Valid key
+    r_valid = client.get("/api/v1/auth/verify", headers={"X-API-Key": project_key})
+    assert r_valid.status_code == 200
+    data = r_valid.json()
+    assert data["status"] == "ok"
+    assert data["authenticated"] is True
+    assert data["project"]["id"] == client.project_id
+    assert data["project"]["name"] is not None
+
+    # 4. Revoked key
+    # Create and immediately revoke a key
+    key_obj, revoked_raw = project_store.create_api_key(client.project_id, "Temporary Key")
+    project_store.revoke_api_key(client.project_id, key_obj["id"])
+    r_revoked = client.get("/api/v1/auth/verify", headers={"X-API-Key": revoked_raw})
+    assert r_revoked.status_code == 401
+    assert "Invalid API key" in r_revoked.json()["detail"]
 
 def test_trace_ingest_and_query(client, project_key):
     now = datetime.now(timezone.utc).isoformat()

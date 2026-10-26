@@ -11,10 +11,17 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import List, Optional
 
 from .engine import run_test
 from .regression import compare_runs
+from .config import resolve_endpoint, resolve_api_key, load_config
+from .dev_server import run_init, run_dev
+from .doctor import run_doctor
+from .db_migrator import run_import_db
 
 
 def discover_test_files(project_path: Path) -> List[Path]:
@@ -76,6 +83,13 @@ def generate_github_summary(report: dict, summary_path: Path) -> None:
         print(f"[Warning] Could not write GitHub step summary: {e}", file=sys.stderr)
 
 
+def is_local_endpoint(url: str) -> bool:
+    """Check if endpoint targets localhost/loopback."""
+    from urllib.parse import urlparse
+    host = (urlparse(url).hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
 def upload_to_backend(report: dict, endpoint: str, api_key: str, commit_sha: Optional[str] = None) -> bool:
     import urllib.request
     import urllib.error
@@ -83,7 +97,7 @@ def upload_to_backend(report: dict, endpoint: str, api_key: str, commit_sha: Opt
     url = endpoint.rstrip("/") + "/api/v1/ci/runs"
     headers = {
         "Content-Type": "application/json",
-        "X-API-Key": api_key
+        "X-API-Key": api_key,
     }
     payload = {
         "commit_sha": commit_sha or os.environ.get("GITHUB_SHA") or "local",
@@ -93,25 +107,135 @@ def upload_to_backend(report: dict, endpoint: str, api_key: str, commit_sha: Opt
         "passed": report["passed"],
         "failed": report["failed"],
         "duration_ms": report["duration_ms"],
-        "report": report
+        "report": report,
     }
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=5.0) as resp:
             return 200 <= resp.status < 300
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            print("Error: API key authentication failed for backend upload (HTTP 401 Unauthorized).", file=sys.stderr)
+        elif e.code == 403:
+            print("Error: API key forbidden for backend upload (HTTP 403 Forbidden).", file=sys.stderr)
+        else:
+            print(f"Error: Failed to upload CI report to {url} (HTTP {e.code}).", file=sys.stderr)
+        return False
+    except urllib.error.URLError as e:
+        print(f"Error: Could not connect to backend at {endpoint}: {e.reason}", file=sys.stderr)
+        return False
     except Exception as e:
-        print(f"[Warning] Failed to upload CI report to {url}: {e}", file=sys.stderr)
+        print(f"Error: Failed to reach backend at {endpoint}: {e}", file=sys.stderr)
         return False
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="agentreliability",
-        description="AgentReliability CLI: automated testing & regression verification."
+        description="AgentReliability CLI: automated testing, status diagnostics & regression verification."
     )
     subparsers = parser.add_subparsers(dest="command")
 
+    # Command: init
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Check prerequisites, create local config, and initialize database.",
+        description="Check prerequisites, create local config, and initialize database.",
+    )
+    init_parser.add_argument(
+        "--install-frontend",
+        action="store_true",
+        help="Automatically run npm install for frontend dependencies if missing.",
+    )
+    init_parser.add_argument(
+        "--install-deps",
+        action="store_true",
+        help="Install missing backend and frontend dependencies automatically.",
+    )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing configuration.",
+    )
+
+    # Command: dev
+    dev_parser = subparsers.add_parser(
+        "dev",
+        help="Start local backend and dashboard with automatic port conflict resolution.",
+        description="Start local backend and dashboard with automatic port conflict resolution.",
+    )
+    dev_parser.add_argument(
+        "--backend-port",
+        type=int,
+        help="Backend port override (default: 8001).",
+    )
+    dev_parser.add_argument(
+        "--frontend-port",
+        type=int,
+        help="Frontend dashboard port override (default: 5174).",
+    )
+    dev_parser.add_argument(
+        "--backend-only",
+        action="store_true",
+        help="Run only the FastAPI backend server.",
+    )
+    dev_parser.add_argument(
+        "--frontend-only",
+        action="store_true",
+        help="Run only the frontend dashboard.",
+    )
+    dev_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host address to bind (default: 127.0.0.1).",
+    )
+    dev_parser.add_argument(
+        "--no-banner",
+        action="store_true",
+        help="Suppress terminal summary banner.",
+    )
+    dev_parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not automatically open the dashboard in the web browser.",
+    )
+
+    # Command: doctor
+    doctor_parser = subparsers.add_parser("doctor", help="Run comprehensive system diagnostics for Python, Node, database, and ports.")
+
+    # Command: import-db
+    import_db_parser = subparsers.add_parser(
+        "import-db",
+        help="Safely import accounts, projects, baselines, and traces from another local SQLite database.",
+    )
+    import_db_parser.add_argument(
+        "--source", "-s",
+        required=True,
+        help="Path to source SQLite database file to import from (opened read-only)."
+    )
+    import_db_parser.add_argument(
+        "--target", "-t",
+        help="Path to target SQLite database file (defaults to active local database)."
+    )
+    import_db_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and count records without committing changes to target database."
+    )
+
+    # Command: status
+    status_parser = subparsers.add_parser("status", help="Verify connection to AgentReliability backend and API key.")
+    status_parser.add_argument(
+        "--endpoint", "-e",
+        help="Backend endpoint URL (defaults to $AGENTRELIABILITY_ENDPOINT or http://127.0.0.1:8001)."
+    )
+    status_parser.add_argument(
+        "--api-key", "-k",
+        help="Project API key (defaults to $AGENTRELIABILITY_API_KEY)."
+    )
+
+    # Command: test
     test_parser = subparsers.add_parser("test", help="Discover and execute agent tests.")
     test_parser.add_argument(
         "--project", "-p",
@@ -127,6 +251,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Path to previous JSON test report to perform regression comparison."
     )
     test_parser.add_argument(
+        "--fail-on-regression",
+        action="store_true",
+        help="Exit with code 1 if a breaking regression is detected against the baseline."
+    )
+    test_parser.add_argument(
         "--upload",
         action="store_true",
         help="Upload CI run results to backend (uses AGENTRELIABILITY_ENDPOINT & AGENTRELIABILITY_API_KEY)."
@@ -136,7 +265,271 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Git commit SHA to associate with this CI run."
     )
 
+    # Command: compare
+    compare_parser = subparsers.add_parser("compare", help="Compare a captured trace against a Golden Baseline on the backend.")
+    compare_parser.add_argument(
+        "--trace", "-t",
+        required=True,
+        help="Candidate trace execution ID to compare."
+    )
+    compare_parser.add_argument(
+        "--baseline-id", "-b",
+        type=int,
+        help="Backend Golden Baseline ID to compare against."
+    )
+    compare_parser.add_argument(
+        "--agent", "-a",
+        help="Agent name whose active Golden Baseline should be compared against (if --baseline-id is omitted)."
+    )
+    compare_parser.add_argument(
+        "--tolerance",
+        type=float,
+        default=50.0,
+        help="Duration tolerance percentage (default: 50.0%%)."
+    )
+    compare_parser.add_argument(
+        "--endpoint", "-e",
+        help="Backend endpoint URL (defaults to $AGENTRELIABILITY_ENDPOINT or http://127.0.0.1:8001)."
+    )
+    compare_parser.add_argument(
+        "--api-key", "-k",
+        help="Project API key (defaults to $AGENTRELIABILITY_API_KEY)."
+    )
+    compare_parser.add_argument(
+        "--output", "-o",
+        help="Path to save the comparison JSON report."
+    )
+
     args = parser.parse_args(argv)
+
+    if not args.command:
+        parser.print_help()
+        return 1
+
+    if args.command == "init":
+        return run_init(
+            install_frontend=args.install_frontend,
+            install_deps=args.install_deps,
+            force=args.force,
+        )
+
+    if args.command == "dev":
+        return run_dev(
+            backend_port=args.backend_port,
+            frontend_port=args.frontend_port,
+            backend_only=args.backend_only,
+            frontend_only=args.frontend_only,
+            host=args.host,
+            no_banner=args.no_banner,
+            open_browser=not args.no_browser,
+        )
+
+    if args.command == "doctor":
+        return run_doctor()
+
+    if args.command == "import-db":
+        return run_import_db(source=args.source, target=args.target, dry_run=args.dry_run)
+
+    if args.command == "status":
+        endpoint = resolve_endpoint(args.endpoint)
+        api_key = resolve_api_key(args.api_key)
+
+        print("\n🔍 AgentReliability Environment Check")
+        print("--------------------------------------------------")
+        print(f"Backend Endpoint : {endpoint}")
+        if api_key:
+            masked = api_key[:7] + "..." + api_key[-4:] if len(api_key) > 12 else "********"
+            print(f"API Key          : {masked} (set)")
+        else:
+            print("API Key          : Not set (AGENTRELIABILITY_API_KEY is empty)")
+        print("--------------------------------------------------")
+
+        # 1. Check health
+        health_url = f"{endpoint}/api/health"
+        try:
+            req = urllib.request.Request(health_url, method="GET")
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                if 200 <= resp.status < 300:
+                    print("✅ Backend Server : ONLINE and healthy")
+        except Exception as e:
+            print(f"❌ Backend Server : OFFLINE or unreachable ({e})")
+            print("   ↳ Troubleshooting: Start backend with 'uvicorn app.main:app --port 8001 --reload'")
+            return 1
+
+        # 2. Check API key validity if provided
+        if api_key:
+            check_url = f"{endpoint}/api/v1/auth/verify"
+            headers = {"X-API-Key": api_key}
+            try:
+                req = urllib.request.Request(check_url, headers=headers, method="GET")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    if 200 <= resp.status < 300:
+                        project_info = ""
+                        try:
+                            body = json.loads(resp.read().decode("utf-8"))
+                            pname = body.get("project", {}).get("name")
+                            if pname:
+                                project_info = f" (Project: '{pname}')"
+                        except Exception:
+                            pass
+                        print(f"✅ API Key Auth   : VALID and authorized{project_info}")
+                    else:
+                        print(f"❌ API Key Auth   : REJECTED (HTTP {resp.status})")
+                        return 1
+            except urllib.error.HTTPError as e:
+                if e.code == 401:
+                    print("❌ API Key Auth   : INVALID or revoked (HTTP 401 Unauthorized)")
+                    print("   ↳ Troubleshooting: Generate a new key in dashboard -> API Keys & SDK")
+                elif e.code == 403:
+                    print("❌ API Key Auth   : FORBIDDEN (HTTP 403 Forbidden)")
+                else:
+                    print(f"❌ API Key Auth   : Failed with HTTP {e.code}")
+                return 1
+            except Exception as e:
+                print(f"⚠️ API Key Check  : Could not verify key ({e})")
+        else:
+            print("⚠️ API Key Auth   : SKIPPED (No API key provided)")
+            print("   ↳ Note: Set AGENTRELIABILITY_API_KEY to send live traces.")
+
+        print("--------------------------------------------------")
+        print("Status: Ready to trace and test AI agents!\n")
+        return 0
+
+    if args.command == "compare":
+        endpoint = resolve_endpoint(args.endpoint)
+        api_key = resolve_api_key(args.api_key)
+
+        if not api_key:
+            print("Error: API key is required. Set AGENTRELIABILITY_API_KEY or pass --api-key.", file=sys.stderr)
+            return 1
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": api_key,
+        }
+
+        baseline_id = args.baseline_id
+
+        # If baseline-id not provided, look up active baseline by agent name
+        if baseline_id is None:
+            if not args.agent:
+                print("Error: Must specify either --baseline-id or --agent to identify the Golden Baseline.", file=sys.stderr)
+                return 2
+
+            list_url = f"{endpoint}/api/v1/baselines?agent_name={urllib.parse.quote(args.agent)}"
+            try:
+                req = urllib.request.Request(list_url, headers=headers, method="GET")
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    if not data:
+                        print(f"Error: No Golden Baseline found for agent '{args.agent}'.", file=sys.stderr)
+                        return 1
+                    baseline_id = data[0]["id"]
+            except urllib.error.HTTPError as e:
+                if e.code == 401:
+                    print("Error: API key authentication failed (HTTP 401 Unauthorized).", file=sys.stderr)
+                elif e.code == 403:
+                    print("Error: API key forbidden (HTTP 403 Forbidden).", file=sys.stderr)
+                else:
+                    print(f"Error: Failed to query baselines (HTTP {e.code}).", file=sys.stderr)
+                return 1
+            except urllib.error.URLError as e:
+                print(f"Error: Could not connect to backend at {endpoint}: {e.reason}", file=sys.stderr)
+                return 1
+            except Exception as e:
+                print(f"Error: Failed to query baselines: {e}", file=sys.stderr)
+                return 1
+
+        compare_url = f"{endpoint}/api/v1/baselines/{baseline_id}/compare"
+        payload = {
+            "candidate_trace_id": args.trace,
+            "duration_tolerance_pct": args.tolerance,
+        }
+        body_bytes = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(compare_url, data=body_bytes, headers=headers, method="POST")
+
+        try:
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                report = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            err_msg = ""
+            try:
+                err_body = json.loads(e.read().decode("utf-8"))
+                err_msg = err_body.get("detail") or ""
+            except Exception:
+                pass
+
+            if e.code == 401:
+                print("Error: API key authentication failed (HTTP 401 Unauthorized).", file=sys.stderr)
+            elif e.code == 403:
+                print("Error: API key forbidden (HTTP 403 Forbidden).", file=sys.stderr)
+            elif e.code == 404:
+                msg = err_msg or "Baseline or candidate trace not found in active project."
+                print(f"Error: {msg}", file=sys.stderr)
+            else:
+                detail = f": {err_msg}" if err_msg else ""
+                print(f"Error: Comparison request failed (HTTP {e.code}{detail}).", file=sys.stderr)
+            return 1
+        except urllib.error.URLError as e:
+            print(f"Error: Could not connect to backend at {endpoint}: {e.reason}", file=sys.stderr)
+            return 1
+        except Exception as e:
+            print(f"Error: Comparison request failed: {e}", file=sys.stderr)
+            return 1
+
+        # Save output if requested
+        if args.output:
+            out_p = Path(args.output)
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            out_p.write_text(json.dumps(report, indent=2), encoding="utf-8")
+            print(f"Comparison report saved to: {out_p}")
+
+        # Display formatted comparison summary
+        b_name = report.get("baseline_name", "Golden Baseline")
+        b_ver = report.get("baseline_version", 1)
+        b_id = report.get("baseline_id", baseline_id)
+        verdict = report.get("verdict", "unknown").upper()
+        is_regression = report.get("is_regression", False)
+        counts = report.get("counts", {})
+        breaking = counts.get("breaking", 0)
+        perf = counts.get("performance", 0)
+        info = counts.get("informational", 0)
+
+        print("\n==================================================")
+        print("🔍 AgentReliability Golden Baseline Comparison")
+        print("==================================================")
+        print(f"Baseline        : [ID: {b_id}] {b_name} (v{b_ver})")
+        print(f"Candidate Trace : {args.trace}")
+        print(f"Verdict         : {verdict}")
+        print(f"Summary         : {report.get('summary', '')}")
+        print("--------------------------------------------------")
+        print(f"Differences     : {breaking} breaking, {perf} performance, {info} informational")
+
+        diffs = report.get("differences", [])
+        if diffs:
+            print("\nDetails:")
+            for d in diffs:
+                sev = d.get("severity", "")
+                cat = d.get("category", "")
+                msg = d.get("message", "")
+                if sev == "breaking_regression":
+                    prefix = "❌ [BREAKING]"
+                elif sev == "performance_regression":
+                    prefix = "⚠️ [PERF]    "
+                else:
+                    prefix = "ℹ️ [INFO]    "
+                print(f"  {prefix} {cat}: {msg}")
+
+        print("--------------------------------------------------")
+        if is_regression or breaking > 0:
+            print("❌ Result: REGRESSION DETECTED (Exit code 1)\n")
+            return 1
+        elif perf > 0:
+            print("⚠️ Result: PASSED WITH PERFORMANCE WARNING (Exit code 0)\n")
+            return 0
+        else:
+            print("✅ Result: PASSED - Matches Golden Baseline (Exit code 0)\n")
+            return 0
 
     if args.command != "test":
         parser.print_help()
@@ -167,6 +560,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         run_res = run_test(case)
         run_res["name"] = test_name
         run_res["file"] = str(f)
+        run_res["expected"] = case.get("expected", {})
         total_duration_ms += run_res.get("duration_ms", 0.0)
         results.append(run_res)
 
@@ -189,9 +583,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         if base_p.exists():
             try:
                 base_data = json.loads(base_p.read_text(encoding="utf-8"))
-                baseline_runs = base_data.get("results")
+                if isinstance(base_data, list):
+                    baseline_runs = base_data
+                elif isinstance(base_data, dict):
+                    baseline_runs = base_data.get("results") or base_data.get("runs") or [base_data]
             except Exception as e:
                 print(f"[Warning] Failed to load baseline from {base_p}: {e}", file=sys.stderr)
+        else:
+            print(f"[Warning] Baseline file '{base_p}' does not exist.", file=sys.stderr)
 
     reg_analysis = compare_runs(results, baseline_runs)
 
@@ -210,7 +609,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"Results: {passed_count} passed, {failed_count} failed of {len(results)} total.")
     if reg_analysis.get("has_baseline"):
         c = reg_analysis["counts"]
-        print(f"Regression Analysis: {c['new_failures']} new failure(s), {c['fixed_failures']} fixed.")
+        breaking_cnt = c.get("breaking", c.get("new_failures", 0))
+        perf_cnt = c.get("performance", 0)
+        info_cnt = c.get("informational", 0)
+        print(f"Regression Analysis: {breaking_cnt} breaking regression(s), {c.get('fixed_failures', 0)} fixed, {perf_cnt} performance warning(s), {info_cnt} informational.")
+        diffs = reg_analysis.get("differences", [])
+        if diffs:
+            print("\nRegression Details:")
+            for d in diffs:
+                sev = d.get("severity", "")
+                cat = d.get("category", "")
+                msg = d.get("message", "")
+                test_label = f"[{d.get('test_name')}] " if d.get("test_name") else ""
+                if sev == "breaking_regression":
+                    prefix = "❌ [BREAKING]"
+                elif sev in ("performance_regression", "performance_warning"):
+                    prefix = "⚠️ [PERF]    "
+                else:
+                    prefix = "ℹ️ [INFO]    "
+                print(f"  {prefix} {test_label}{cat}: {msg}")
     print(f"--------------------------------------------------\n")
 
     # Save output if requested
@@ -226,18 +643,40 @@ def main(argv: Optional[List[str]] = None) -> int:
         generate_github_summary(report, Path(gh_summary))
 
     # Upload to backend if requested
+    upload_success = True
     if args.upload:
-        endpoint = os.environ.get("AGENTRELIABILITY_ENDPOINT", "http://localhost:8000")
-        api_key = os.environ.get("AGENTRELIABILITY_API_KEY", "")
-        if not api_key:
-            print("[Warning] --upload specified but AGENTRELIABILITY_API_KEY is not set.", file=sys.stderr)
-        else:
-            success = upload_to_backend(report, endpoint, api_key, args.commit)
-            if success:
-                print("Uploaded test results successfully to AgentReliability backend.")
+        endpoint = resolve_endpoint()
+        api_key = resolve_api_key()
 
-    # Return exit code 0 if all passed, nonzero if any failed
-    return 0 if failed_count == 0 else 1
+        if not api_key:
+            print("Error: --upload specified but AGENTRELIABILITY_API_KEY is not configured.", file=sys.stderr)
+            upload_success = False
+        else:
+            upload_success = upload_to_backend(report, endpoint, api_key, args.commit)
+            if upload_success:
+                print("Uploaded test results successfully to AgentReliability backend.")
+            else:
+                print("Remote upload failed.", file=sys.stderr)
+
+    has_breaking_regression = (
+        reg_analysis.get("has_baseline", False)
+        and (
+            reg_analysis.get("is_regression", False)
+            or reg_analysis.get("counts", {}).get("breaking", 0) > 0
+            or reg_analysis.get("counts", {}).get("new_failures", 0) > 0
+        )
+    )
+
+    if getattr(args, "fail_on_regression", False) and has_breaking_regression:
+        print("❌ Result: BREAKING REGRESSION DETECTED against baseline (--fail-on-regression enabled).\n", file=sys.stderr)
+        return 1
+
+    # Return exit code 0 if all tests passed and upload succeeded (if requested), nonzero otherwise
+    if failed_count > 0:
+        return 1
+    if args.upload and not upload_success:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

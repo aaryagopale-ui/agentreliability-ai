@@ -41,6 +41,8 @@ class TraceEvent(BaseModel):
     status: Optional[Literal["success", "error", "timeout", "failed"]] = None
     error_type: Optional[str] = Field(default=None, max_length=200)
     error_message: Optional[str] = None
+    parent_call_id: Optional[str] = Field(default=None, max_length=100)
+    retry_count: Optional[int] = Field(default=0, ge=0, le=100)
 
     @field_validator("event_id")
     @classmethod

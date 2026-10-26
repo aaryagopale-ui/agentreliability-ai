@@ -8,7 +8,15 @@ export default function History() {
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState(null);
 
-  useEffect(() => { listRuns().then(setRuns).catch(() => setError("Cannot reach the backend. Is it running on port 8000?")); }, []);
+  useEffect(() => {
+    listRuns()
+      .then(setRuns)
+      .catch((err) => {
+        if (err?.status !== 401) {
+          setError(err?.message || "Unable to load test history.");
+        }
+      });
+  }, []);
   useEffect(() => {
     if (!selected) { setDetail(null); return; }
     getRun(selected).then(setDetail).catch(() => setDetail(null));

@@ -1,18 +1,33 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from app import database, project_store
 from app.main import app
+from app.migrations.runner import run_migrations
+from app.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENTRELIABILITY_DB", str(tmp_path / "test.db"))
+    db_file = str(tmp_path / "test.db")
+    monkeypatch.setenv("AGENTRELIABILITY_DB", db_file)
+    monkeypatch.setenv("AGENTRELIABILITY_ENV", "test")
+    with database.connect() as conn:
+        run_migrations(conn)
+
     with TestClient(app) as c:
+        res = c.post("/api/auth/register", json={"email": "alice@example.com", "password": "Password123!", "name": "Alice"})
+        user = res.json()
+        csrf = res.cookies[CSRF_COOKIE_NAME]
+        c.headers[CSRF_HEADER_NAME] = csrf
+        projs = project_store.list_user_projects(user["id"])
+        c.user_id = user["id"]
+        c.project_id = projs[0]["id"]
         yield c
 
 @pytest.fixture()
 def project_key(client):
-    from app.create_key import create_key
-    return create_key("ci-project")
+    _, raw_key = project_store.create_api_key(client.project_id, "CI Key")
+    return raw_key
 
 def test_ci_ingest_auth_required(client):
     r = client.post("/api/v1/ci/runs", json={})

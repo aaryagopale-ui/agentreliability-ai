@@ -123,15 +123,37 @@ def run_test(test: dict) -> dict:
 
     # 2. Tool-call sequence
     exp_seq, obs_seq = expected.get("tool_sequence", []), tool_sequence_of(observed)
-    if exp_seq != obs_seq:
-        pos = next((i for i, (a, b) in enumerate(zip(exp_seq, obs_seq)) if a != b), min(len(exp_seq), len(obs_seq)))
-        want = exp_seq[pos] if pos < len(exp_seq) else "(nothing)"
-        got = obs_seq[pos] if pos < len(obs_seq) else "(nothing)"
-        mismatches.append({"kind": "sequence_mismatch", "step_index": None,
-                           "message": f"Tool-call sequence differs at position {pos + 1}: expected {want}, observed {got}. "
-                                      f"Expected {exp_seq}, observed {obs_seq}."})
+    strict_order = expected.get("strict_order", True)
+    allow_additional = expected.get("allow_additional_tools", False)
 
-    # 3. Final output
+    if exp_seq:
+        if strict_order:
+            if not allow_additional and exp_seq != obs_seq:
+                pos = next((i for i, (a, b) in enumerate(zip(exp_seq, obs_seq)) if a != b), min(len(exp_seq), len(obs_seq)))
+                want = exp_seq[pos] if pos < len(exp_seq) else "(nothing)"
+                got = obs_seq[pos] if pos < len(obs_seq) else "(nothing)"
+                mismatches.append({"kind": "sequence_mismatch", "step_index": None,
+                                   "message": f"Tool-call sequence differs at position {pos + 1}: expected {want}, observed {got}. "
+                                              f"Expected {exp_seq}, observed {obs_seq}."})
+            elif allow_additional:
+                # Expected tools must appear in order, but intermediate tools are permitted
+                it = iter(obs_seq)
+                if not all(t in it for t in exp_seq):
+                    mismatches.append({"kind": "missing_expected_tool", "step_index": None,
+                                       "message": f"Expected tool sequence {exp_seq} was not found in observed sequence {obs_seq}."})
+        else:
+            # Set-based comparison
+            missing_tools = [t for t in exp_seq if t not in obs_seq]
+            if missing_tools:
+                mismatches.append({"kind": "missing_expected_tool", "step_index": None,
+                                   "message": f"Expected tool(s) {missing_tools} were not called in observed execution."})
+            if not allow_additional:
+                extra_tools = [t for t in obs_seq if t not in exp_seq]
+                if extra_tools:
+                    mismatches.append({"kind": "unexpected_tool_call", "step_index": None,
+                                       "message": f"Unexpected tool call(s) observed: {extra_tools}."})
+
+    # 3. Final output & Output Fields
     obs_out = final_output_of(observed)
     exp_out = expected.get("final_output")
     if exp_out is not None:
@@ -142,11 +164,42 @@ def run_test(test: dict) -> dict:
             mismatches.append({"kind": "output_mismatch", "step_index": None,
                                "message": f"Final output differs. Expected {_norm(exp_out)!r}, observed {_norm(obs_out)!r}."})
 
-    # 4. Overall status
+    # Expected output schema / required keys
+    req_fields = expected.get("expected_output_fields")
+    if req_fields:
+        if not isinstance(obs_out, dict):
+            mismatches.append({"kind": "output_schema_mismatch", "step_index": None,
+                               "message": f"Expected dictionary output with fields {req_fields}, but got {type(obs_out).__name__}."})
+        else:
+            missing_keys = [k for k in req_fields if k not in obs_out]
+            if missing_keys:
+                mismatches.append({"kind": "missing_output_field", "step_index": None,
+                                   "message": f"Required output field(s) {missing_keys} are missing from final output."})
+
+    # 4. Expected Error Type
+    exp_err_type = expected.get("expected_error_type")
+    if exp_err_type:
+        obs_errors = [s.get("error_type") or s.get("error") for s in observed if s.get("status") in ("error", "failed", "exception", "timeout") or s.get("error")]
+        if not any(exp_err_type.lower() in str(e).lower() for e in obs_errors if e):
+            mismatches.append({"kind": "error_type_mismatch", "step_index": None,
+                               "message": f"Expected error of type '{exp_err_type}', but observed: {obs_errors or 'no errors'}."})
+
+    # 5. Overall status
     obs_status = "failed" if findings else "success"
     if obs_status != expected.get("status", "success"):
         mismatches.append({"kind": "status_mismatch", "step_index": None,
                            "message": f"Expected overall status '{expected.get('status')}', observed '{obs_status}'."})
+
+    duration = round((time.perf_counter() - started) * 1000, 3)
+
+    # 6. Maximum duration constraint
+    max_dur = expected.get("max_duration_ms")
+    # If the recorded steps have step durations (e.g. from trace), use sum of step durations; otherwise simulation elapsed time
+    total_step_dur = sum(s.get("duration_ms", 0) for s in observed if isinstance(s.get("duration_ms"), (int, float)))
+    effective_dur = total_step_dur if total_step_dur > 0 else duration
+    if max_dur is not None and effective_dur > max_dur:
+        mismatches.append({"kind": "duration_exceeded", "step_index": None,
+                           "message": f"Execution duration {effective_dur} ms exceeded maximum allowed threshold {max_dur} ms."})
 
     return {
         "status": "failed" if mismatches else "passed",

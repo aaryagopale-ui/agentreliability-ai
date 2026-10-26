@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-10-18T12:00:00Z",
+  "total": 2,
+  "passed": 2,
+  "failed": 0,
+  "results": [
+    {
+      "name": "Order Fulfillment Flow",
+      "status": "passed"
+    },
+    {
+      "name": "Client Authentication Flow",
+      "status": "passed"
+    }
+  ]
+}
+

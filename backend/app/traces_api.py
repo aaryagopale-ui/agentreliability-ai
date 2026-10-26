@@ -1,7 +1,9 @@
-"""Trace API: SDK ingestion (needs an API key) and dashboard reads.
+"""Trace API: SDK trace ingestion and dashboard observability endpoints.
 
-Honest scope note: the dashboard READ endpoints have no login (Phase 3 only adds key auth for
-SDK writes). Run this locally; add user login before exposing it to a network.
+Authentication & Authorization:
+  - SDK Ingestion (/api/v1/traces/*): Authenticated via project-scoped API keys (X-API-Key header).
+  - Dashboard Observability (/api/traces/*): Authenticated via session cookies or API keys,
+    strictly scoped and isolated to the authenticated project (via get_authorized_project / require_owned_trace).
 """
 import json
 from datetime import datetime
@@ -11,8 +13,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import ValidationError
 
 from . import test_store, trace_store
-from .replay import final_output_of
-from .test_schemas import FromExecutionIn
+from .auth_deps import get_authorized_project, require_owned_trace
+from .auth_api import check_csrf
+from .test_schemas import FromExecutionIn, FromTraceIn
 from .testgen import generate_from_execution
 from .traces_schemas import MAX_BODY_BYTES, IngestRequest
 
@@ -31,6 +34,19 @@ def require_project(x_api_key: Optional[str] = Header(default=None)) -> dict:
     if project is None:
         raise HTTPException(401, "Invalid API key.")
     return project
+
+
+@router.get("/api/v1/auth/verify")
+def verify_api_key(project: dict = Depends(require_project)):
+    """Lightweight API key verification endpoint for CLI and SDK clients."""
+    return {
+        "status": "ok",
+        "authenticated": True,
+        "project": {
+            "id": project["id"],
+            "name": project["name"],
+        },
+    }
 
 
 # ---------------------------------------------------------------- ingestion
@@ -68,39 +84,46 @@ def list_trace_executions(
     until: Optional[datetime] = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    project: dict = Depends(get_authorized_project),
 ):
-    return trace_store.list_executions(agent, status, failure_kind, since, until, limit, offset)
+    return trace_store.list_executions(agent, status, failure_kind, since, until, limit, offset, project_id=project["id"])
 
 
 @router.get("/api/traces/agents")
-def list_trace_agents():
-    return trace_store.list_agents()
+def list_trace_agents(project: dict = Depends(get_authorized_project)):
+    return trace_store.list_agents(project_id=project["id"])
 
 
 @router.get("/api/traces/errors")
-def trace_errors(agent: Optional[str] = None, since: Optional[datetime] = None,
-                 limit: int = Query(default=50, ge=1, le=200)):
+def trace_errors(
+    agent: Optional[str] = None,
+    since: Optional[datetime] = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    project: dict = Depends(get_authorized_project),
+):
     """Failed executions plus failed (error/timeout) tool calls."""
-    failed = trace_store.list_executions(agent, "failed", None, since, None, limit, 0)["items"]
-    tools = [t for t in trace_store.list_tool_calls(agent=agent, since=since, limit=limit * 2)
+    failed = trace_store.list_executions(agent, "failed", None, since, None, limit, 0, project_id=project["id"])["items"]
+    tools = [t for t in trace_store.list_tool_calls(agent=agent, since=since, limit=limit * 2, project_id=project["id"])
              if t["status"] != "success"][:limit]
     return {"failed_executions": failed, "failed_tool_calls": tools}
 
 
 @router.get("/api/traces/tool-calls")
-def trace_tool_calls(execution_id: Optional[str] = None,
-                     status: Optional[str] = Query(default=None, pattern="^(success|error|timeout)$"),
-                     tool_name: Optional[str] = None, agent: Optional[str] = None,
-                     since: Optional[datetime] = None, limit: int = Query(default=100, ge=1, le=500)):
-    return trace_store.list_tool_calls(execution_id, status, tool_name, agent, since, limit)
+def trace_tool_calls(
+    execution_id: Optional[str] = None,
+    status: Optional[str] = Query(default=None, pattern="^(success|error|timeout)$"),
+    tool_name: Optional[str] = None,
+    agent: Optional[str] = None,
+    since: Optional[datetime] = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    project: dict = Depends(get_authorized_project),
+):
+    return trace_store.list_tool_calls(execution_id, status, tool_name, agent, since, limit, project_id=project["id"])
 
 
 @router.get("/api/traces/executions/{execution_id}")
-def get_trace_execution(execution_id: str):
-    data = trace_store.get_execution(execution_id)
-    if data is None:
-        raise HTTPException(404, "Execution not found.")
-    return data
+def get_trace_execution(execution: dict = Depends(require_owned_trace)):
+    return execution
 
 
 # ---------------------------------------------------------------- monitoring -> testing
@@ -132,22 +155,32 @@ def trace_to_steps(execution: dict) -> list:
 
 
 @router.post("/api/traces/executions/{execution_id}/create-test", status_code=201)
-def create_test_from_trace(execution_id: str, body: Optional[FromExecutionIn] = None):
-    execution = trace_store.get_execution(execution_id)
-    if execution is None:
-        raise HTTPException(404, "Execution not found.")
+def create_test_from_trace(
+    request: Request,
+    execution: dict = Depends(require_owned_trace),
+    body: Optional[FromTraceIn] = None,
+):
+    check_csrf(request)
     if execution["status"] == "running":
         raise HTTPException(409, "This execution is still running (no end event yet). Wait for it to finish.")
     steps = trace_to_steps(execution)
+    exec_id = execution["execution_id"]
+    default_name = f"{execution['agent_name']} / trace {exec_id[:8]}"
     data = generate_from_execution(
-        {"id": execution_id[:8], "agent_name": execution["agent_name"], "run_id": execution_id, "steps": steps},
-        body.name if body and body.name else f"{execution['agent_name']} / trace {execution_id[:8]}",
+        {"id": exec_id[:8], "agent_name": execution["agent_name"], "run_id": exec_id, "steps": steps},
+        body.name if body and body.name else default_name,
     )
     data["input"] = execution["input"]
-    data["description"] = (
-        f"Created from a RECORDED REAL execution (SDK trace {execution_id}). Running this test is a "
-        "deterministic simulation with mocked tools; it is not a live re-execution of your agent."
-    )
-    case_id = test_store.create_case(data, source_type=SOURCE_LABEL, source_trace_id=execution_id)
-    return test_store.get_case(case_id)
+    if body and body.description:
+        data["description"] = body.description
+    else:
+        data["description"] = (
+            f"Created from a RECORDED REAL execution (SDK trace {exec_id}). Running this test is a "
+            "deterministic simulation with mocked tools; it is not a live re-execution of your agent."
+        )
+    if body and body.expected is not None:
+        data["expected"] = body.expected.model_dump()
+    proj_id = execution.get("project_id", 1)
+    case_id = test_store.create_case(data, source_type=SOURCE_LABEL, source_trace_id=exec_id, project_id=proj_id)
+    return test_store.get_case(case_id, project_id=proj_id)
 

@@ -83,7 +83,11 @@ export default function TestCases({ goTo, openReplay }) {
 
   const load = useCallback(() => {
     listTests().then((d) => { setTests(d); setLoadError(null); })
-      .catch(() => setLoadError("Cannot reach the backend. Is it running on port 8000?"));
+      .catch((err) => {
+        if (err.status !== 401) {
+          setLoadError(err.message || "Failed to load test cases.");
+        }
+      });
   }, []);
   useEffect(load, [load]);
 
@@ -125,13 +129,35 @@ export default function TestCases({ goTo, openReplay }) {
         ) : (
           <table className="w-full text-left text-sm">
             <thead className="border-b border-slate-800 text-xs uppercase text-slate-500">
-              <tr><th className="px-4 py-3">Name</th><th className="px-4 py-3">Agent</th><th className="px-4 py-3">Steps</th><th className="px-4 py-3">Last result</th><th className="px-4 py-3 text-right">Actions</th></tr>
+              <tr>
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Agent</th>
+                <th className="px-4 py-3">Source</th>
+                <th className="px-4 py-3">Steps</th>
+                <th className="px-4 py-3">Last result</th>
+                <th className="px-4 py-3 text-right">Actions</th>
+              </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
               {tests.map((t) => (
                 <tr key={t.id} className="hover:bg-slate-800/40">
                   <td className="px-4 py-3 font-medium text-slate-100">{t.name}</td>
                   <td className="px-4 py-3 text-slate-400">{t.agent_name}</td>
+                  <td className="px-4 py-3">
+                    {t.source_type === "recorded_real_execution" ? (
+                      <span className="inline-flex items-center rounded-md bg-cyan-500/10 px-2 py-0.5 text-xs font-medium text-cyan-300 ring-1 ring-cyan-500/30">
+                        Recorded Trace
+                      </span>
+                    ) : t.source_execution_id ? (
+                      <span className="inline-flex items-center rounded-md bg-indigo-500/10 px-2 py-0.5 text-xs font-medium text-indigo-300 ring-1 ring-indigo-500/30">
+                        Uploaded Log
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center rounded-md bg-slate-800 px-2 py-0.5 text-xs font-medium text-slate-400">
+                        Manual
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-slate-400">{t.step_count}</td>
                   <td className="px-4 py-3"><StatusBadge status={t.last_run_status} /></td>
                   <td className="space-x-2 whitespace-nowrap px-4 py-3 text-right">

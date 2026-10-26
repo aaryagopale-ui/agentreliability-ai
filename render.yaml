@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: agentreliability-backend
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: "pip install -r backend/requirements.txt"
+    startCommand: "cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers"
+    healthCheckPath: "/api/health"
+    disk:
+      name: agentreliability-data
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: AGENTRELIABILITY_ENV
+        value: production
+      - key: PYTHONPATH
+        value: .
+      - key: AGENTRELIABILITY_DB
+        value: /var/data/agentreliability.db
+      - key: AGENTRELIABILITY_COOKIE_SECURE
+        value: "true"
+      - key: AGENTRELIABILITY_COOKIE_SAMESITE
+        value: "none"
+      - key: AGENTRELIABILITY_ALLOWED_ORIGINS
+        sync: false

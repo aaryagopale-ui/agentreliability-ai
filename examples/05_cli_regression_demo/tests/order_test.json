@@ -1,0 +1,39 @@
+{
+  "name": "Order Fulfillment Flow",
+  "description": "Verifies that order fulfillment invokes inventory check and tax calculation in order.",
+  "steps": [
+    {
+      "type": "tool_call",
+      "name": "check_inventory",
+      "status": "success",
+      "duration_ms": 14.5,
+      "output": {"available": true, "stock": 100}
+    },
+    {
+      "type": "tool_call",
+      "name": "calculate_tax",
+      "status": "success",
+      "duration_ms": 18.2,
+      "output": {"tax_cents": 850}
+    },
+    {
+      "type": "tool_call",
+      "name": "create_shipment",
+      "status": "success",
+      "duration_ms": 45.0,
+      "output": {"tracking_number": "TRK-2026-999"}
+    }
+  ],
+  "expected": {
+    "status": "success",
+    "tool_sequence": [
+      "check_inventory",
+      "calculate_tax",
+      "create_shipment"
+    ],
+    "strict_order": true,
+    "allow_additional_tools": false,
+    "max_duration_ms": 500
+  }
+}
+

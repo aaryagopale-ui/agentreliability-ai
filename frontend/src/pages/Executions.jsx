@@ -16,8 +16,10 @@ export default function Executions({ goTo }) {
     try {
       setItems(await listExecutions());
       setLoadError(null);
-    } catch {
-      setLoadError("Cannot reach the backend. Is it running on port 8000?");
+    } catch (err) {
+      if (err?.status !== 401) {
+        setLoadError(err?.message || "Unable to load agent executions.");
+      }
     }
   }, []);
 

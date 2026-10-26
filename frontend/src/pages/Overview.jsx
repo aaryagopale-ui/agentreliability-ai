@@ -8,8 +8,13 @@ export default function Overview({ goTo }) {
   const action = useAsyncAction();
 
   const load = useCallback(() => {
-    getOverview().then((d) => { setData(d); setLoadError(null); })
-      .catch(() => setLoadError("Cannot reach the backend. Is it running on port 8000?"));
+    getOverview()
+      .then((d) => { setData(d); setLoadError(null); })
+      .catch((err) => {
+        if (err.status !== 401) {
+          setLoadError(err.message || "Unable to load dashboard data.");
+        }
+      });
   }, []);
   useEffect(load, [load]);
 
@@ -26,8 +31,9 @@ export default function Overview({ goTo }) {
       </PageTitle>
       {loadError && <p className="mb-4 rounded-lg bg-amber-500/10 p-3 text-sm text-amber-200">{loadError}</p>}
       <div className="mb-4"><ErrorBox error={action.error} /></div>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <StatCard label="Executions" value={data?.executions.total ?? "–"} />
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
+        <StatCard label="Live SDK Traces" value={data?.live_traces?.total ?? "–"} tone="text-cyan-400" />
+        <StatCard label="Uploaded Logs" value={data?.executions.total ?? "–"} tone="text-indigo-400" />
         <StatCard label="Test cases" value={t?.total ?? "–"} />
         <StatCard label="Passed" value={t?.passed ?? "–"} tone="text-emerald-400" />
         <StatCard label="Failed" value={t?.failed ?? "–"} tone="text-red-400" />
@@ -39,7 +45,7 @@ export default function Overview({ goTo }) {
           <button className="text-sm text-indigo-400 hover:underline" onClick={() => goTo("history")}>View all</button>
         </div>
         {!data || data.recent_runs.length === 0 ? (
-          <Empty>No test runs yet. Upload a log, create a test case, then run it.</Empty>
+          <Empty>No test runs yet. Capture a trace or upload a log, create a test case, then run it.</Empty>
         ) : (
           <ul className="divide-y divide-slate-800">
             {data.recent_runs.map((r) => (
@@ -56,7 +62,7 @@ export default function Overview({ goTo }) {
       </Card>
       <Card className="mt-6 text-sm text-slate-400">
         <p className="font-semibold text-slate-200">How it fits together</p>
-        <p className="mt-1">1) Upload a log in <b>Agent Executions</b>. 2) Create a <b>Test Case</b> from it. 3) Run it in the <b>Replay Engine</b> (a deterministic simulation with mocked tools). 4) Study failures in <b>Failure Analysis</b> and <b>Test History</b>.</p>
+        <p className="mt-1">1) Ingest real traces via SDK (<b>Live Agent Monitoring</b>) or upload JSON logs in <b>Agent Executions</b>. 2) Create a <b>Test Case</b> or <b>Golden Baseline</b> from either source. 3) Run tests in the <b>Replay Engine</b> (deterministic simulation with mocked tools) or run <b>Regression Comparisons</b>. 4) Inspect failures in <b>Failure Analysis</b> and <b>Test History</b>.</p>
       </Card>
     </>
   );

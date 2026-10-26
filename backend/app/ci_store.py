@@ -14,25 +14,8 @@ def _now() -> str:
 
 
 def init_tables() -> None:
-    with connect() as conn:
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS ci_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id INTEGER NOT NULL,
-                commit_sha TEXT NOT NULL,
-                branch TEXT NOT NULL,
-                actor TEXT NOT NULL,
-                status TEXT NOT NULL,
-                total INTEGER NOT NULL,
-                passed INTEGER NOT NULL,
-                failed INTEGER NOT NULL,
-                duration_ms REAL NOT NULL,
-                report_json TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )"""
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_ci_created ON ci_runs (created_at)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_ci_commit ON ci_runs (commit_sha)")
+    # Tables are managed via versioned database migrations (app.migrations)
+    pass
 
 
 def save_ci_run(project_id: int, data: dict) -> int:
@@ -62,23 +45,32 @@ def save_ci_run(project_id: int, data: dict) -> int:
         return cur.lastrowid
 
 
-def list_ci_runs(limit: int = 50, offset: int = 0) -> List[dict]:
+def list_ci_runs(project_id: Optional[int] = None, limit: int = 50, offset: int = 0) -> List[dict]:
     with connect() as conn:
-        rows = conn.execute(
-            """SELECT id, project_id, commit_sha, branch, actor, status, total, passed, failed, duration_ms, created_at
-               FROM ci_runs ORDER BY id DESC LIMIT ? OFFSET ?""",
-            (limit, offset)
-        ).fetchall()
+        if project_id is not None:
+            rows = conn.execute(
+                """SELECT id, project_id, commit_sha, branch, actor, status, total, passed, failed, duration_ms, created_at
+                   FROM ci_runs WHERE project_id = ? ORDER BY id DESC LIMIT ? OFFSET ?""",
+                (project_id, limit, offset)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT id, project_id, commit_sha, branch, actor, status, total, passed, failed, duration_ms, created_at
+                   FROM ci_runs ORDER BY id DESC LIMIT ? OFFSET ?""",
+                (limit, offset)
+            ).fetchall()
 
     return [dict(r) for r in rows]
 
 
-def get_ci_run(run_id: int) -> Optional[dict]:
+def get_ci_run(run_id: int, project_id: Optional[int] = None) -> Optional[dict]:
     with connect() as conn:
-        row = conn.execute("SELECT * FROM ci_runs WHERE id = ?", (run_id,)).fetchone()
+        if project_id is not None:
+            row = conn.execute("SELECT * FROM ci_runs WHERE id = ? AND project_id = ?", (run_id, project_id)).fetchone()
+        else:
+            row = conn.execute("SELECT * FROM ci_runs WHERE id = ?", (run_id,)).fetchone()
     if not row:
         return None
     d = dict(row)
     d["report"] = json.loads(row["report_json"])
     return d
-

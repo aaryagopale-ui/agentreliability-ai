@@ -409,20 +409,328 @@ def test_queue_overflow_drops_instead_of_blocking():
     m.flush(timeout=5)
 
 
-def test_async_functions_warn_and_run_untraced():
+def test_async_agent_success():
     import asyncio
+    m, c = make(capture_io=True)
+
+    @m.trace_agent("async_researcher")
+    async def run(topic: str):
+        await asyncio.sleep(0.01)
+        return f"Report on {topic}"
+
+    res = asyncio.run(run("reliability"))
+    assert res == "Report on reliability"
+    assert m.flush()
+
+    assert len(c.events) == 2
+    start = c.events[0]
+    end = c.events[1]
+    assert start["type"] == "execution_start"
+    assert start["agent_name"] == "async_researcher"
+    assert start["input"] == {"topic": "reliability"}
+    assert end["type"] == "execution_end"
+    assert end["status"] == "success"
+    assert end["output"] == "Report on reliability"
+    assert end["duration_ms"] > 0
+    assert start["execution_id"] == end["execution_id"]
+
+
+def test_async_tool_success():
+    import asyncio
+    m, c = make(capture_io=True)
+
+    @m.trace_tool("async_fetch")
+    async def fetch(url: str):
+        await asyncio.sleep(0.01)
+        return {"data": f"content from {url}"}
+
+    @m.trace_agent("async_agent")
+    async def run(url: str):
+        data = await fetch(url)
+        return data["data"]
+
+    res = asyncio.run(run("https://api.example.com"))
+    assert res == "content from https://api.example.com"
+    assert m.flush()
+
+    assert len(c.events) == 3
+    tool_ev = c.events[1]
+    assert tool_ev["type"] == "tool_call"
+    assert tool_ev["tool_name"] == "async_fetch"
+    assert tool_ev["status"] == "success"
+    assert tool_ev["input"] == {"url": "https://api.example.com"}
+    assert tool_ev["output"] == {"data": "content from https://api.example.com"}
+    assert tool_ev["duration_ms"] > 0
+    assert tool_ev["parent_call_id"] is None
+    assert tool_ev["execution_id"] == c.events[0]["execution_id"]
+
+
+def test_sync_tool_in_async_agent():
+    import asyncio
+    m, c = make(capture_io=True)
+
+    @m.trace_tool("sync_calc")
+    def calc(a: int, b: int):
+        return a + b
+
+    @m.trace_agent("async_calc_agent")
+    async def run(a: int, b: int):
+        await asyncio.sleep(0.005)
+        return calc(a, b)
+
+    res = asyncio.run(run(5, 7))
+    assert res == 12
+    assert m.flush()
+
+    assert len(c.events) == 3
+    tool_ev = c.events[1]
+    assert tool_ev["type"] == "tool_call"
+    assert tool_ev["tool_name"] == "sync_calc"
+    assert tool_ev["status"] == "success"
+    assert tool_ev["output"] == 12
+    assert tool_ev["execution_id"] == c.events[0]["execution_id"]
+
+
+def test_async_tool_in_sync_agent():
+    import asyncio
+    m, c = make(capture_io=True)
+
+    @m.trace_tool("async_fetch")
+    async def fetch(item_id: int):
+        await asyncio.sleep(0.005)
+        return f"item_{item_id}"
+
+    @m.trace_agent("sync_agent_calling_async")
+    def run(item_id: int):
+        return asyncio.run(fetch(item_id))
+
+    res = run(42)
+    assert res == "item_42"
+    assert m.flush()
+
+    assert len(c.events) == 3
+    tool_ev = c.events[1]
+    assert tool_ev["type"] == "tool_call"
+    assert tool_ev["tool_name"] == "async_fetch"
+    assert tool_ev["status"] == "success"
+    assert tool_ev["output"] == "item_42"
+
+
+def test_async_agent_failure():
+    import asyncio
+    m, c = make(capture_io=True)
+
+    @m.trace_agent("failing_async_agent")
+    async def run():
+        await asyncio.sleep(0.005)
+        raise ValueError("async agent exploded")
+
+    with pytest.raises(ValueError, match="async agent exploded"):
+        asyncio.run(run())
+
+    assert m.flush()
+    assert len(c.events) == 2
+    end = c.events[1]
+    assert end["type"] == "execution_end"
+    assert end["status"] == "failed"
+    assert end["error_type"] == "ValueError"
+    assert "async agent exploded" in end["error_message"]
+
+
+def test_async_tool_failure_and_timeout():
+    import asyncio
+    m, c = make(capture_io=True)
+
+    @m.trace_tool("failing_tool")
+    async def fail_tool():
+        await asyncio.sleep(0.005)
+        raise ConnectionResetError("connection reset by peer")
+
+    @m.trace_tool("timeout_tool")
+    async def timeout_tool():
+        await asyncio.sleep(0.005)
+        raise TimeoutError("operation timed out after 5s")
+
+    @m.trace_agent("agent_handling_errors")
+    async def run(mode: str):
+        if mode == "fail":
+            try:
+                await fail_tool()
+            except ConnectionResetError:
+                return "caught_fail"
+        elif mode == "timeout":
+            try:
+                await timeout_tool()
+            except TimeoutError:
+                return "caught_timeout"
+
+    res1 = asyncio.run(run("fail"))
+    assert res1 == "caught_fail"
+    res2 = asyncio.run(run("timeout"))
+    assert res2 == "caught_timeout"
+    assert m.flush()
+
+    tools = by_type(c.events, "tool_call")
+    assert len(tools) == 2
+    assert tools[0]["tool_name"] == "failing_tool"
+    assert tools[0]["status"] == "error"
+    assert tools[0]["error_type"] == "ConnectionResetError"
+
+    assert tools[1]["tool_name"] == "timeout_tool"
+    assert tools[1]["status"] == "timeout"
+    assert tools[1]["error_type"] == "TimeoutError"
+
+
+def test_nested_async_tools():
+    import asyncio
+    m, c = make(capture_io=True)
+
+    @m.trace_tool("child_tool")
+    async def child_tool(val: int):
+        await asyncio.sleep(0.005)
+        return val * 2
+
+    @m.trace_tool("parent_tool")
+    async def parent_tool(val: int):
+        res = await child_tool(val)
+        return res + 1
+
+    @m.trace_agent("nested_agent")
+    async def run(val: int):
+        return await parent_tool(val)
+
+    assert asyncio.run(run(10)) == 21
+    assert m.flush()
+
+    tools = by_type(c.events, "tool_call")
+    assert len(tools) == 2
+    # In execution order, child finishes before parent
+    child_ev = [t for t in tools if t["tool_name"] == "child_tool"][0]
+    parent_ev = [t for t in tools if t["tool_name"] == "parent_tool"][0]
+
+    assert child_ev["parent_call_id"] == parent_ev["event_id"]
+    assert parent_ev["parent_call_id"] is None
+
+
+def test_concurrent_async_tasks_isolated_context():
+    import asyncio
+    m, c = make(capture_io=True)
+
+    @m.trace_tool("worker_tool")
+    async def worker_tool(agent_id: str, step: int):
+        await asyncio.sleep(0.01)
+        return f"{agent_id}_step_{step}"
+
+    @m.trace_agent("concurrent_worker")
+    async def worker(agent_id: str):
+        r1 = await worker_tool(agent_id, 1)
+        r2 = await worker_tool(agent_id, 2)
+        return [r1, r2]
+
+    async def main():
+        task1 = asyncio.create_task(worker("worker_A"))
+        task2 = asyncio.create_task(worker("worker_B"))
+        return await asyncio.gather(task1, task2)
+
+    res = asyncio.run(main())
+    assert res == [["worker_A_step_1", "worker_A_step_2"], ["worker_B_step_1", "worker_B_step_2"]]
+    assert m.flush()
+
+    starts = by_type(c.events, "execution_start")
+    ends = by_type(c.events, "execution_end")
+    tools = by_type(c.events, "tool_call")
+
+    assert len(starts) == 2
+    assert len(ends) == 2
+    assert len(tools) == 4
+
+    exec_ids = {s["execution_id"] for s in starts}
+    assert len(exec_ids) == 2
+
+    # Map each execution_id to its agent input
+    exec_inputs = {s["execution_id"]: s["input"]["agent_id"] for s in starts}
+
+    # Verify that every tool call belongs strictly to the execution where it was invoked
+    for t in tools:
+        assert t["execution_id"] in exec_ids
+        expected_owner = exec_inputs[t["execution_id"]]
+        assert t["input"]["agent_id"] == expected_owner
+        assert expected_owner in t["output"]
+
+
+def test_concurrent_async_tools_in_one_agent():
+    import asyncio
+    m, c = make(capture_io=True)
+
+    @m.trace_tool("fast_tool")
+    async def fast_tool(x: int):
+        await asyncio.sleep(0.005)
+        return x * 10
+
+    @m.trace_agent("parallel_tools_agent")
+    async def run():
+        results = await asyncio.gather(fast_tool(1), fast_tool(2), fast_tool(3))
+        return sum(results)
+
+    assert asyncio.run(run()) == 60
+    assert m.flush()
+
+    tools = by_type(c.events, "tool_call")
+    assert len(tools) == 3
+    exec_id = c.events[0]["execution_id"]
+    for t in tools:
+        assert t["execution_id"] == exec_id
+        assert t["parent_call_id"] is None
+        assert t["status"] == "success"
+
+
+def test_async_with_tool_call_context_manager():
+    import asyncio
+    m, c = make(capture_io=True)
+
+    @m.trace_agent("ctx_agent")
+    async def run():
+        async with m.tool_call("manual_async_tool", input={"k": "v"}) as call:
+            await asyncio.sleep(0.01)
+            call.set_output({"res": 100})
+            return 100
+
+    assert asyncio.run(run()) == 100
+    assert m.flush()
+
+    tools = by_type(c.events, "tool_call")
+    assert len(tools) == 1
+    assert tools[0]["tool_name"] == "manual_async_tool"
+    assert tools[0]["output"] == {"res": 100}
+
+
+def test_disabled_async_agent():
+    import asyncio
+    m, c = make(enabled=False)
+
+    @m.trace_tool("tool")
+    async def a_tool():
+        return 99
+
+    @m.trace_agent("a")
+    async def run():
+        return await a_tool()
+
+    assert asyncio.run(run()) == 99
+    assert m.flush() and c.events == []
+
+
+def test_async_generators_still_warn():
+    import warnings
     m, c = make()
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
 
-        @m.trace_agent("a")
-        async def run():
-            return 7
+        @m.trace_agent("gen_agent")
+        async def gen():
+            yield 1
 
-    assert any("async" in str(x.message) for x in w)
-    assert asyncio.run(run()) == 7
-    m.flush()
-    assert c.events == []
+    assert any("async generator" in str(x.message) for x in w)
 
 
 def test_disabled_monitor_sends_nothing():
@@ -434,3 +742,425 @@ def test_disabled_monitor_sends_nothing():
 
     assert run() == 3
     assert m.flush() and c.events == []
+
+
+def test_nested_tool_calls_and_retries_tracking():
+    m, c = make(capture_io=True)
+
+    @m.trace_tool("child_tool")
+    def child_tool(val: int):
+        return val * 2
+
+    @m.trace_tool("parent_tool", retry_count=1)
+    def parent_tool(x: int):
+        return child_tool(x) + 1
+
+    @m.trace_agent("test_agent")
+    def run_agent():
+        return parent_tool(5)
+
+    assert run_agent() == 11
+    m.flush()
+
+    tool_events = [e for e in c.events if e["type"] == "tool_call"]
+    assert len(tool_events) == 2
+
+    # child tool completes first, then parent tool completes
+    child_event = next(e for e in tool_events if e["tool_name"] == "child_tool")
+    parent_event = next(e for e in tool_events if e["tool_name"] == "parent_tool")
+
+    assert parent_event["retry_count"] == 1
+    assert parent_event["parent_call_id"] is None
+    assert child_event["parent_call_id"] == parent_event["event_id"]
+    assert child_event["retry_count"] == 0
+
+
+def test_package_level_convenience_exports(monkeypatch):
+    import agentreliability
+    # Ensure default monitor works
+    monkeypatch.setenv("AGENTRELIABILITY_API_KEY", "ar_live_mocktestkey1234567890123456")
+    monkeypatch.setenv("AGENTRELIABILITY_ENDPOINT", "http://127.0.0.1:8001")
+    agentreliability._default_monitor = None
+
+    @agentreliability.trace_tool("test_convenience_tool")
+    def helper_tool(n: int):
+        return n + 10
+
+    @agentreliability.trace_agent("convenience_agent")
+    def agent_main():
+        return helper_tool(5)
+
+    assert agent_main() == 15
+    assert agentreliability.flush() is True
+
+
+# ---------------------------------------------------------------- trace_execution (Issue #3)
+
+def test_trace_execution_sync_success():
+    m, c = make(capture_io=True, metadata={"env": "unit_test"})
+
+    with m.trace_execution("data_processor", input_data={"batch_id": 101}) as trace:
+        assert trace.execution_id
+        assert trace.name == "data_processor"
+        time.sleep(0.01)
+        trace.set_output({"processed_rows": 50, "status": "ok"})
+
+    assert m.flush()
+    assert len(c.events) == 2
+    start, end = c.events[0], c.events[1]
+
+    assert start["type"] == "execution_start"
+    assert start["agent_name"] == "data_processor"
+    assert start["execution_id"] == trace.execution_id
+    assert start["input"] == {"batch_id": 101}
+    assert start["metadata"] == {"env": "unit_test"}
+
+    assert end["type"] == "execution_end"
+    assert end["execution_id"] == trace.execution_id
+    assert end["status"] == "success"
+    assert end["output"] == {"processed_rows": 50, "status": "ok"}
+    assert end["duration_ms"] > 0
+    assert trace.duration_ms > 0
+
+
+def test_trace_execution_set_input_dynamic():
+    m, c = make(capture_io=True)
+
+    with m.trace_execution("dynamic_flow") as trace:
+        # Input wasn't known at enter time, set inside block
+        trace.set_input({"customer_id": "CUST-999"})
+        trace.set_output("success")
+
+    assert m.flush()
+    start_events = [e for e in c.events if e["type"] == "execution_start"]
+    assert len(start_events) >= 1
+    # Check that latest start event has the dynamic input
+    assert start_events[-1]["input"] == {"customer_id": "CUST-999"}
+
+
+def test_trace_execution_sync_exception_reraised():
+    m, c = make(capture_io=True)
+
+    with pytest.raises(ZeroDivisionError, match="division by zero"):
+        with m.trace_execution("math_block", input_data={"divisor": 0}) as trace:
+            _ = 100 / 0
+
+    assert m.flush()
+    assert len(c.events) == 2
+    end = c.events[1]
+    assert end["type"] == "execution_end"
+    assert end["status"] == "failed"
+    assert end["error_type"] == "ZeroDivisionError"
+    assert "division by zero" in end["error_message"]
+
+
+def test_trace_execution_explicit_set_error():
+    m, c = make(capture_io=True)
+
+    with m.trace_execution("payment_service") as trace:
+        trace.set_output({"attempted": True})
+        trace.set_error("Payment gateway connection rejected")
+
+    assert m.flush()
+    assert len(c.events) == 2
+    end = c.events[1]
+    assert end["status"] == "failed"
+    assert end["error_type"] == "ExecutionError"
+    assert end["error_message"] == "Payment gateway connection rejected"
+    assert end["output"] == {"attempted": True}
+
+
+def test_trace_execution_explicit_set_error_exception_object():
+    m, c = make(capture_io=True)
+
+    with m.trace_execution("custom_service") as trace:
+        trace.set_error(ValueError("Invalid state transition"))
+
+    assert m.flush()
+    end = c.events[1]
+    assert end["status"] == "failed"
+    assert end["error_type"] == "ValueError"
+    assert end["error_message"] == "Invalid state transition"
+
+
+def test_trace_execution_nested_tool_calls():
+    m, c = make(capture_io=True)
+
+    @m.trace_tool("fetch_data")
+    def fetch_data(key: str):
+        return f"value_{key}"
+
+    with m.trace_execution("parent_pipeline", input_data={"key": "k1"}) as trace:
+        val = fetch_data("k1")
+        with m.tool_call("save_data", input=val) as t:
+            t.set_output("saved")
+        trace.set_output("done")
+
+    assert m.flush()
+    tool_events = [e for e in c.events if e["type"] == "tool_call"]
+    assert len(tool_events) == 2
+    for t_ev in tool_events:
+        assert t_ev["execution_id"] == trace.execution_id
+        assert t_ev["agent_name"] == "parent_pipeline"
+        assert t_ev["status"] == "success"
+
+
+def test_trace_execution_async_success():
+    import asyncio
+    m, c = make(capture_io=True)
+
+    async def run_async_task():
+        async with m.trace_execution("async_pipeline", input_data={"items": 3}) as trace:
+            await asyncio.sleep(0.01)
+            trace.set_output({"items": 3, "status": "completed"})
+            return trace.execution_id
+
+    exec_id = asyncio.run(run_async_task())
+    assert m.flush()
+    assert len(c.events) == 2
+    end = c.events[1]
+    assert end["execution_id"] == exec_id
+    assert end["status"] == "success"
+    assert end["output"] == {"items": 3, "status": "completed"}
+    assert end["duration_ms"] > 0
+
+
+def test_trace_execution_async_exception_reraised():
+    import asyncio
+    m, c = make(capture_io=True)
+
+    async def run_failing_task():
+        async with m.trace_execution("failing_async", input_data={"run": True}) as trace:
+            await asyncio.sleep(0.01)
+            raise KeyError("missing_config_key")
+
+    with pytest.raises(KeyError, match="missing_config_key"):
+        asyncio.run(run_failing_task())
+
+    assert m.flush()
+    assert len(c.events) == 2
+    end = c.events[1]
+    assert end["status"] == "failed"
+    assert end["error_type"] == "KeyError"
+    assert "missing_config_key" in end["error_message"]
+
+
+def test_trace_execution_concurrent_isolation():
+    import asyncio
+    m, c = make(capture_io=True)
+
+    @m.trace_tool("concurrent_tool")
+    async def sub_tool(worker_id: str):
+        await asyncio.sleep(0.01)
+        return f"result_{worker_id}"
+
+    async def worker(worker_id: str):
+        async with m.trace_execution(f"worker_{worker_id}", input_data={"worker_id": worker_id}) as trace:
+            await sub_tool(worker_id)
+            trace.set_output(f"done_{worker_id}")
+            return trace.execution_id
+
+    async def main():
+        return await asyncio.gather(worker("A"), worker("B"))
+
+    id_a, id_b = asyncio.run(main())
+    assert id_a != id_b
+    assert m.flush()
+
+    tools = [e for e in c.events if e["type"] == "tool_call"]
+    assert len(tools) == 2
+
+    tool_a = next(t for t in tools if t["input"] == {"worker_id": "A"})
+    tool_b = next(t for t in tools if t["input"] == {"worker_id": "B"})
+
+    assert tool_a["execution_id"] == id_a
+    assert tool_a["agent_name"] == "worker_A"
+    assert tool_b["execution_id"] == id_b
+    assert tool_b["agent_name"] == "worker_B"
+
+
+def test_trace_execution_disabled_monitoring(caplog):
+    m = AgentMonitor(endpoint="http://x.test")  # No API key -> disabled
+    assert m.enabled is False
+
+    with m.trace_execution("disabled_task", input_data={"key": "val"}) as trace:
+        assert trace.execution_id == ""
+        trace.set_input({"updated": True})
+        trace.set_output({"res": 1})
+        trace.set_error("Ignored error")
+
+    # Verify exception inside disabled block is still re-raised properly
+    with pytest.raises(ValueError, match="boom"):
+        with m.trace_execution("disabled_task_fail"):
+            raise ValueError("boom")
+
+
+def test_trace_execution_top_level_package_convenience(monkeypatch):
+    import agentreliability
+    monkeypatch.setenv("AGENTRELIABILITY_API_KEY", "ar_live_mocktestkey1234567890123456")
+    monkeypatch.setenv("AGENTRELIABILITY_ENDPOINT", "http://127.0.0.1:8001")
+    agentreliability._default_monitor = None
+
+    with agentreliability.trace_execution("pkg_level_task", input_data={"a": 1}) as trace:
+        assert trace.execution_id
+        trace.set_output({"result": "success"})
+
+    assert agentreliability.flush() is True
+
+
+# ---------------------------------------------------------------- package-level tool_call (Issue #6)
+
+def test_package_level_tool_call_export():
+    import agentreliability
+    assert hasattr(agentreliability, "tool_call")
+    assert callable(agentreliability.tool_call)
+    assert "tool_call" in agentreliability.__all__
+
+
+def test_package_level_tool_call_sync_success(monkeypatch):
+    import agentreliability
+    c = Collector()
+    agentreliability.init(
+        endpoint="http://example.test",
+        api_key=KEY,
+        _post=c,
+        capture_io=True,
+        retry_backoff=0.0,
+    )
+
+    with agentreliability.trace_execution("tax_service", input_data={"subtotal": 100}) as trace:
+        with agentreliability.tool_call("calc_tax", input={"rate": 0.1, "amount": 100}) as t:
+            t.set_output({"tax": 10})
+        trace.set_output({"total": 110})
+
+    assert agentreliability.flush() is True
+    tool_events = [e for e in c.events if e["type"] == "tool_call"]
+    assert len(tool_events) == 1
+    t_ev = tool_events[0]
+    assert t_ev["tool_name"] == "calc_tax"
+    assert t_ev["status"] == "success"
+    assert t_ev["input"] == {"rate": 0.1, "amount": 100}
+    assert t_ev["output"] == {"tax": 10}
+    assert t_ev["execution_id"] == trace.execution_id
+    assert t_ev["agent_name"] == "tax_service"
+
+
+def test_package_level_tool_call_nested_hierarchy(monkeypatch):
+    import agentreliability
+    c = Collector()
+    agentreliability.init(
+        endpoint="http://example.test",
+        api_key=KEY,
+        _post=c,
+        capture_io=True,
+        retry_backoff=0.0,
+    )
+
+    with agentreliability.trace_execution("order_pipeline", input_data={"id": "O-1"}) as trace:
+        with agentreliability.tool_call("parent_step", input={"step": 1}) as t_parent:
+            with agentreliability.tool_call("child_substep", input={"substep": "1a"}) as t_child:
+                t_child.set_output("substep_complete")
+            t_parent.set_output("step_complete")
+        trace.set_output("order_complete")
+
+    assert agentreliability.flush() is True
+    tool_events = [e for e in c.events if e["type"] == "tool_call"]
+    assert len(tool_events) == 2
+
+    child_ev = next(e for e in tool_events if e["tool_name"] == "child_substep")
+    parent_ev = next(e for e in tool_events if e["tool_name"] == "parent_step")
+
+    assert parent_ev["parent_call_id"] is None
+    assert child_ev["parent_call_id"] == parent_ev["event_id"]
+    assert parent_ev["execution_id"] == trace.execution_id
+    assert child_ev["execution_id"] == trace.execution_id
+
+
+def test_package_level_tool_call_async_usage(monkeypatch):
+    import asyncio
+    import agentreliability
+    c = Collector()
+    agentreliability.init(
+        endpoint="http://example.test",
+        api_key=KEY,
+        _post=c,
+        capture_io=True,
+        retry_backoff=0.0,
+    )
+
+    async def run_async_flow():
+        async with agentreliability.trace_execution("async_search", input_data={"q": "rag"}) as trace:
+            async with agentreliability.tool_call("vector_lookup", input={"q": "rag"}) as t:
+                await asyncio.sleep(0.01)
+                t.set_output({"matches": 5})
+            trace.set_output("done")
+            return trace.execution_id
+
+    exec_id = asyncio.run(run_async_flow())
+    assert agentreliability.flush() is True
+
+    tool_events = [e for e in c.events if e["type"] == "tool_call"]
+    assert len(tool_events) == 1
+    t_ev = tool_events[0]
+    assert t_ev["tool_name"] == "vector_lookup"
+    assert t_ev["status"] == "success"
+    assert t_ev["output"] == {"matches": 5}
+    assert t_ev["execution_id"] == exec_id
+
+
+def test_package_level_tool_call_disabled_monitoring(monkeypatch):
+    import agentreliability
+    # Reconfigure default monitor without an API key
+    monkeypatch.delenv("AGENTRELIABILITY_API_KEY", raising=False)
+    agentreliability._default_monitor = None
+    agentreliability.init(endpoint="http://x.test", api_key=None)
+    assert agentreliability.get_default_monitor().enabled is False
+
+    # Calling tool_call when disabled does not raise exceptions
+    with agentreliability.tool_call("noop_tool", input={"x": 1}) as t:
+        t.set_input({"x": 2})
+        t.set_output({"res": 3})
+
+    # But exceptions inside the block are still re-raised properly
+    with pytest.raises(RuntimeError, match="critical error in user code"):
+        with agentreliability.tool_call("failing_tool"):
+            raise RuntimeError("critical error in user code")
+
+
+def test_package_level_tool_call_outside_execution_is_safe(monkeypatch):
+    import agentreliability
+    c = Collector()
+    agentreliability.init(endpoint="http://example.test", api_key=KEY, _post=c)
+
+    # Calling tool_call outside of any active trace_agent / trace_execution
+    with agentreliability.tool_call("standalone_tool", input="data") as t:
+        t.set_output("result")
+
+    # Emits nothing because there is no parent execution, but does not crash
+    assert agentreliability.flush() is True
+    tool_events = [e for e in c.events if e["type"] == "tool_call"]
+    assert len(tool_events) == 0
+
+
+def test_package_level_tool_call_input_data_alias(monkeypatch):
+    import agentreliability
+    c = Collector()
+    agentreliability.init(
+        endpoint="http://example.test",
+        api_key=KEY,
+        _post=c,
+        capture_io=True,
+        retry_backoff=0.0,
+    )
+
+    with agentreliability.trace_execution("alias_task") as trace:
+        with agentreliability.tool_call("aliased_tool", input_data={"param": 42}) as t:
+            t.set_output("ok")
+
+    assert agentreliability.flush() is True
+    tool_events = [e for e in c.events if e["type"] == "tool_call"]
+    assert len(tool_events) == 1
+    assert tool_events[0]["input"] == {"param": 42}
+
+
+
