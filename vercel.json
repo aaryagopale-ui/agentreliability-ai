@@ -5,6 +5,14 @@
   "framework": "vite",
   "rewrites": [
     {
+      "source": "/api",
+      "destination": "https://agentreliability-backend.onrender.com/api"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "https://agentreliability-backend.onrender.com/api/:path*"
+    },
+    {
       "source": "/((?!assets/|favicon.ico|robots.txt|.*\\..*).*)",
       "destination": "/index.html"
     }

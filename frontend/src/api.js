@@ -21,8 +21,29 @@ export function getCsrfToken() {
   return cachedCsrfToken || getCookie("agentreliability_csrf");
 }
 
+// Resolve the API base URL.
+// In same-origin mode (production on Vercel or local development with Vite dev server),
+// all API requests must use relative paths starting with '/api'.
+// This ensures cookies are host-only, first-party, and never blocked by Safari ITP or third-party cookie restrictions.
 const RAW_API_BASE = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_BASE_URL) || "";
-const API_BASE = RAW_API_BASE.replace(/\/+$/, "");
+
+export function resolveApiBase() {
+  if (typeof window !== "undefined") {
+    // When running in a browser environment:
+    // If RAW_API_BASE is an absolute URL pointing to an external domain (e.g. *.onrender.com),
+    // we ignore the external domain and use relative '' so requests route through the Vercel same-origin /api rewrite proxy.
+    // This permanently prevents Safari ITP / cross-site tracking blocks.
+    if (RAW_API_BASE.startsWith("http://") || RAW_API_BASE.startsWith("https://")) {
+      const isLocalHost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+      if (!isLocalHost) {
+        return "";
+      }
+    }
+  }
+  return RAW_API_BASE.replace(/\/+$/, "");
+}
+
+const API_BASE = resolveApiBase();
 
 async function request(path, options = {}) {
   const headers = {
@@ -63,7 +84,19 @@ async function request(path, options = {}) {
     signal: options.signal || (controller ? controller.signal : undefined),
   };
 
-  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
+  // Strip any absolute backend URLs that might have been passed, ensuring requests remain relative same-origin
+  let cleanPath = path;
+  if (cleanPath.startsWith("http://") || cleanPath.startsWith("https://")) {
+    try {
+      const parsed = new URL(cleanPath);
+      cleanPath = parsed.pathname + parsed.search;
+    } catch {
+      // Keep original if unparseable
+    }
+  }
+
+  const base = resolveApiBase();
+  const url = cleanPath.startsWith("/") ? `${base}${cleanPath}` : `${base}/${cleanPath}`;
   let res;
   try {
     res = await fetch(url, fetchOptions);

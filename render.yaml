@@ -17,6 +17,6 @@ services:
       - key: AGENTRELIABILITY_COOKIE_SECURE
         value: "true"
       - key: AGENTRELIABILITY_COOKIE_SAMESITE
-        value: "none"
+        value: "lax"
       - key: AGENTRELIABILITY_ALLOWED_ORIGINS
         value: "https://agentreliability-ai.vercel.app"

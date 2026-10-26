@@ -32,7 +32,7 @@ CSRF_HEADER_NAME = "X-CSRF-Token"
 SESSION_MAX_AGE_SECONDS = int(os.environ.get("AGENTRELIABILITY_SESSION_MAX_AGE_SECONDS", 7 * 24 * 3600))  # 7 days
 RESET_TOKEN_MAX_AGE_SECONDS = int(os.environ.get("AGENTRELIABILITY_RESET_TOKEN_MAX_AGE_SECONDS", 3600))  # 1 hour
 _is_prod = os.environ.get("AGENTRELIABILITY_ENV", "development").strip().lower() == "production"
-COOKIE_SAMESITE = os.environ.get("AGENTRELIABILITY_COOKIE_SAMESITE", "none" if _is_prod else "lax").lower()
+COOKIE_SAMESITE = os.environ.get("AGENTRELIABILITY_COOKIE_SAMESITE", "lax").lower()
 # Browsers mandate that SameSite=None cookies MUST have Secure=True
 _force_secure = COOKIE_SAMESITE == "none" or _is_prod
 COOKIE_SECURE = os.environ.get("AGENTRELIABILITY_COOKIE_SECURE", "true" if _force_secure else "false").lower() in ("true", "1", "yes")
@@ -41,8 +41,12 @@ if COOKIE_SAMESITE == "none":
 
 
 def get_cookie_samesite() -> str:
-    is_prod = os.environ.get("AGENTRELIABILITY_ENV", "development").strip().lower() == "production"
-    return os.environ.get("AGENTRELIABILITY_COOKIE_SAMESITE", "none" if is_prod else "lax").lower()
+    """SameSite attribute for session and CSRF cookies.
+
+    Defaults to 'lax' for same-origin operation through reverse proxies (e.g. Vercel /api rewrite to Render)
+    and local development. SameSite=Lax prevents cross-site tracking issues in Safari ITP.
+    """
+    return os.environ.get("AGENTRELIABILITY_COOKIE_SAMESITE", "lax").lower()
 
 
 def get_cookie_secure() -> bool:

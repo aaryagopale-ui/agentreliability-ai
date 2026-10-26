@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
@@ -83,9 +84,17 @@ def resolve_allowed_origins() -> list[str]:
 async def preserve_cors_on_error_middleware(request: Request, call_next):
     """Ensure that even unhandled exceptions (HTTP 500) return a structured response
     that passes through CORSMiddleware, preserving Access-Control-Allow-Origin headers
-    so frontend clients receive clear diagnostic errors rather than misleading browser CORS blocks."""
+    so frontend clients receive clear diagnostic errors rather than misleading browser CORS blocks.
+    Also ensures redirect responses (3xx) do not leak absolute backend URLs that would
+    bypass same-origin proxies (e.g. Vercel /api rewrite)."""
     try:
-        return await call_next(request)
+        response = await call_next(request)
+        if response.status_code in (301, 302, 307, 308) and "location" in response.headers:
+            loc = response.headers["location"]
+            parsed = urlparse(loc)
+            if parsed.netloc:
+                response.headers["location"] = f"{parsed.path}{'?' + parsed.query if parsed.query else ''}"
+        return response
     except Exception as exc:
         logger.exception("Unhandled server exception processing %s %s: %s", request.method, request.url.path, exc)
         return JSONResponse(
