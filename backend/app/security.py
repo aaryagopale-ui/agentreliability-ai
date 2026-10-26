@@ -17,7 +17,7 @@ import secrets
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .database import connect
 
@@ -159,6 +159,19 @@ def create_session(
         }
 
 
+def _parse_datetime(val: Any) -> Optional[datetime]:
+    """Parse datetime from datetime object or ISO string safely."""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val if val.tzinfo is not None else val.replace(tzinfo=timezone.utc)
+    try:
+        dt = datetime.fromisoformat(str(val))
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
 def validate_session(raw_token: str) -> Optional[dict]:
     """Validate session token. Returns session dict with user_id, or None if expired/invalid."""
     if not raw_token:
@@ -173,10 +186,8 @@ def validate_session(raw_token: str) -> Optional[dict]:
         if not row:
             return None
 
-        # Check expiration
-        expires = datetime.fromisoformat(row["expires_at"])
-        if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
+        # Check expiration safely supporting string or native datetime
+        expires = _parse_datetime(row["expires_at"])
 
         if now_utc() > expires:
             conn.execute("DELETE FROM sessions WHERE id = ?", (row["id"],))
@@ -245,9 +256,7 @@ def validate_password_reset_token(raw_token: str) -> Optional[int]:
         if row["used_at"] is not None:
             return None  # already used
 
-        expires = datetime.fromisoformat(row["expires_at"])
-        if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
+        expires = _parse_datetime(row["expires_at"])
 
         if now_utc() > expires:
             return None  # expired

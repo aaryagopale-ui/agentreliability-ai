@@ -79,11 +79,16 @@ async function request(path, options = {}) {
       rawMsg.includes("Failed to fetch") ||
       rawMsg.includes("NetworkError") ||
       netErr instanceof TypeError;
+    const isProd = typeof window !== "undefined" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1";
     const err = new Error(
       isTimeout
-        ? `Backend Request Timed Out (${Math.round(timeoutMs / 1000)}s): The AgentReliability backend API stopped responding. The service may be hung, overloaded, or unresponsively blocked on I/O. Please run 'agentreliability doctor' or restart with 'agentreliability dev'.`
+        ? (isProd
+            ? `Backend Request Timed Out (${Math.round(timeoutMs / 1000)}s): The cloud backend service (${API_BASE || "Render"}) took too long to respond. On Render's free tier, inactive services sleep and require up to 60s for cold start. Please click 'Retry Connection'.`
+            : `Backend Request Timed Out (${Math.round(timeoutMs / 1000)}s): The AgentReliability backend API stopped responding. The service may be hung, overloaded, or unresponsively blocked on I/O. Please run 'agentreliability doctor' or restart with 'agentreliability dev'.`)
         : isConnErr
-        ? "Backend Server Unreachable: Could not connect to AgentReliability backend API. Please verify that 'agentreliability dev' is running on port 8001."
+        ? (isProd
+            ? `Backend Service Unreachable: Could not connect to the cloud backend at ${API_BASE || "https://agentreliability-backend.onrender.com"}. The backend may still be spinning up from sleep, restarting, or experiencing network connectivity issues.`
+            : "Backend Server Unreachable: Could not connect to AgentReliability backend API. Please verify that 'agentreliability dev' is running on port 8001.")
         : `Network request failed: ${rawMsg}`
     );
     err.status = 0;
@@ -116,7 +121,10 @@ async function request(path, options = {}) {
     const d = data?.detail;
     let msg = typeof d === "string" ? d : d?.message || "Request failed";
     if (res.status === 502 || res.status === 504) {
-      msg = `Backend Gateway Error (${res.status}): The frontend dashboard proxy cannot reach the AgentReliability backend. Please ensure 'agentreliability dev' is running on port 8001.`;
+      const isProd = typeof window !== "undefined" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1";
+      msg = isProd
+        ? `Backend Gateway Error (${res.status}): The cloud backend service is temporarily starting up or unavailable. Please retry shortly.`
+        : `Backend Gateway Error (${res.status}): The frontend dashboard proxy cannot reach the AgentReliability backend. Please ensure 'agentreliability dev' is running on port 8001.`;
     }
     const err = new Error(msg);
     err.status = res.status;

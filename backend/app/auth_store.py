@@ -53,7 +53,7 @@ def get_user_by_email_with_hash(email: str) -> Optional[dict]:
     with connect() as conn:
         row = conn.execute(
             """SELECT id, email, password_hash, name, created_at, updated_at
-               FROM users WHERE email = ? COLLATE NOCASE""",
+               FROM users WHERE LOWER(email) = LOWER(?)""",
             (email.lower().strip(),),
         ).fetchone()
         return dict(row) if row else None
@@ -85,7 +85,7 @@ def email_exists(email: str) -> bool:
     """Check if an email is registered."""
     with connect() as conn:
         row = conn.execute(
-            "SELECT 1 FROM users WHERE email = ? COLLATE NOCASE",
+            "SELECT 1 FROM users WHERE LOWER(email) = LOWER(?)",
             (email.lower().strip(),),
         ).fetchone()
         return row is not None

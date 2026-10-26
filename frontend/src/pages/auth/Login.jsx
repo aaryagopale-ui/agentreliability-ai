@@ -8,6 +8,9 @@ export default function Login({ onAuthSuccess, onNavigate, systemInfo, initialEr
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(initialError || null);
 
+  const isCloud = typeof window !== "undefined" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1";
+  const isPostgres = systemInfo?.database_engine === "postgres" || isCloud;
+
   async function handleSubmit(e) {
     e.preventDefault();
     if (!email.trim() || !password) {
@@ -47,17 +50,17 @@ export default function Login({ onAuthSuccess, onNavigate, systemInfo, initialEr
               Connected Database:
             </span>
             <span className="font-mono text-[11px] text-emerald-400">
-              {systemInfo?.database_name || "agentreliability.db"}
+              {systemInfo?.database_name || (isPostgres ? "Neon PostgreSQL" : "agentreliability.db")}
             </span>
           </div>
           <div className="flex items-center justify-between text-[11px] text-slate-400">
-            <span>Local Instance:</span>
+            <span>{isCloud ? "Environment:" : "Local Instance:"}</span>
             <span className="font-mono text-slate-300">
-              {systemInfo?.instance_id || "ar_inst_local"}
+              {isCloud ? "Cloud Production" : (systemInfo?.instance_id || "ar_inst_local")}
             </span>
           </div>
           <div className="text-[10px] text-slate-500 truncate" title={systemInfo?.database_path}>
-            Storage: {systemInfo?.database_path || "backend/agentreliability.db"}
+            Storage: {isPostgres ? "Persistent Managed PostgreSQL (Neon)" : (systemInfo?.database_path || "backend/agentreliability.db")}
           </div>
         </div>
 
@@ -71,11 +74,15 @@ export default function Login({ onAuthSuccess, onNavigate, systemInfo, initialEr
                   <span>Backend Unresponsiveness or Timeout</span>
                 </div>
                 <p className="text-[11px] leading-relaxed text-amber-200/90">
-                  The backend service timed out while processing requests. This may occur if a server process hung on pipe I/O or is restarting.
+                  {isCloud
+                    ? "The cloud backend service may be spinning up from idle (free-tier services spin down after inactivity and take 30-50s to wake up). Please wait a moment and retry."
+                    : "The backend service timed out while processing requests. This may occur if a server process hung on pipe I/O or is restarting."}
                 </p>
-                <div className="rounded bg-slate-950/80 p-2 font-mono text-[11px] text-slate-300 border border-slate-800">
-                  agentreliability dev
-                </div>
+                {!isCloud && (
+                  <div className="rounded bg-slate-950/80 p-2 font-mono text-[11px] text-slate-300 border border-slate-800">
+                    agentreliability dev
+                  </div>
+                )}
                 {onRetry && (
                   <button
                     type="button"
@@ -93,14 +100,24 @@ export default function Login({ onAuthSuccess, onNavigate, systemInfo, initialEr
                   <span>Backend Connectivity Issue</span>
                 </div>
                 <p className="text-[11px] leading-relaxed text-red-300/90">
-                  The dashboard could not establish a connection to the AgentReliability backend API.
+                  {isCloud
+                    ? "The dashboard could not establish a connection to the AgentReliability cloud API. If the service recently deployed or went idle, it may take up to a minute to start."
+                    : "The dashboard could not establish a connection to the AgentReliability backend API."}
                 </p>
-                <div className="rounded bg-slate-950/80 p-2 font-mono text-[11px] text-slate-300 border border-slate-800">
-                  agentreliability dev
-                </div>
-                <p className="text-[10px] text-slate-400">
-                  Ensure the command above is actively running in your terminal, or run <code className="text-indigo-300">agentreliability doctor</code> to diagnose.
-                </p>
+                {!isCloud ? (
+                  <>
+                    <div className="rounded bg-slate-950/80 p-2 font-mono text-[11px] text-slate-300 border border-slate-800">
+                      agentreliability dev
+                    </div>
+                    <p className="text-[10px] text-slate-400">
+                      Ensure the command above is actively running in your terminal, or run <code className="text-indigo-300">agentreliability doctor</code> to diagnose.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-[10px] text-slate-400">
+                    Ensure the Render backend web service is active and healthy.
+                  </p>
+                )}
                 {onRetry && (
                   <button
                     type="button"
@@ -117,14 +134,18 @@ export default function Login({ onAuthSuccess, onNavigate, systemInfo, initialEr
                   <svg className="h-4 w-4 text-indigo-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
-                  <span>Working with multiple local installations?</span>
+                  <span>{isCloud ? "Account Authentication" : "Working with multiple local installations?"}</span>
                 </div>
                 <p className="text-[11px] leading-relaxed text-slate-400">
-                  <strong>Important:</strong> Independent local databases do not synchronize accounts based on email alone. If your account was registered in a different folder or port, your credentials exist only in that folder's SQLite database.
+                  {isCloud
+                    ? "If your account was registered in a local development installation, please register on this cloud deployment or verify that your account was migrated to Neon PostgreSQL."
+                    : <><strong>Important:</strong> Independent local databases do not synchronize accounts based on email alone. If your account was registered in a different folder or port, your credentials exist only in that folder's SQLite database.</>}
                 </p>
-                <p className="text-[10px] text-slate-500 pt-0.5">
-                  Use <code className="text-indigo-300 bg-slate-900 px-1 py-0.5 rounded">agentreliability import-db --source &lt;path&gt;</code> to migrate accounts, or click "Create account" below.
-                </p>
+                {!isCloud && (
+                  <p className="text-[10px] text-slate-500 pt-0.5">
+                    Use <code className="text-indigo-300 bg-slate-900 px-1 py-0.5 rounded">agentreliability import-db --source &lt;path&gt;</code> to migrate accounts, or click "Create account" below.
+                  </p>
+                )}
               </div>
             )}
           </div>

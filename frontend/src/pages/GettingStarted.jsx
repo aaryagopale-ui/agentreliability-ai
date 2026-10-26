@@ -337,7 +337,7 @@ export default function GettingStarted({ currentProject, user, systemInfo, goTo 
             </div>
             <div className="flex items-center gap-1.5 text-[11px] text-slate-400 font-mono">
               <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
-              <span>Local SQLite: {systemInfo?.database_name || "agentreliability.db"}</span>
+              <span>{systemInfo?.database_engine === "postgres" ? "Neon PostgreSQL" : `Local SQLite: ${systemInfo?.database_name || "agentreliability.db"}`}</span>
             </div>
           </div>
 
@@ -394,7 +394,9 @@ export default function GettingStarted({ currentProject, user, systemInfo, goTo 
                 <span>🔒 Privacy & Data Isolation Notice</span>
               </div>
               <p className="text-[11px] text-slate-400 leading-relaxed">
-                Your account, projects, baselines, and traces are stored in this workspace's local SQLite database (<code className="text-slate-300">{systemInfo?.database_path || "backend/agentreliability.db"}</code>). All passwords use memory-hard scrypt hashing. Data is never sent to an external cloud or third-party server.
+                {systemInfo?.database_engine === "postgres"
+                  ? <>Your account, projects, baselines, and traces are securely stored in Neon PostgreSQL (<code className="text-slate-300">{systemInfo?.database_path || "Neon Cloud Database"}</code>). All passwords use memory-hard scrypt hashing.</>
+                  : <>Your account, projects, baselines, and traces are stored in this workspace's local SQLite database (<code className="text-slate-300">{systemInfo?.database_path || "backend/agentreliability.db"}</code>). All passwords use memory-hard scrypt hashing. Data is never sent to an external cloud or third-party server.</>}
               </p>
             </div>
             <div className="flex justify-end pt-2">

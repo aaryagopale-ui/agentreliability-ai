@@ -9,6 +9,9 @@ export default function Register({ onAuthSuccess, onNavigate, systemInfo }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  const isCloud = typeof window !== "undefined" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1";
+  const isPostgres = systemInfo?.database_engine === "postgres" || isCloud;
+
   async function handleSubmit(e) {
     e.preventDefault();
     if (!name.trim() || !email.trim() || !password) {
@@ -56,17 +59,17 @@ export default function Register({ onAuthSuccess, onNavigate, systemInfo }) {
               Connected Database:
             </span>
             <span className="font-mono text-[11px] text-emerald-400">
-              {systemInfo?.database_name || "agentreliability.db"}
+              {systemInfo?.database_name || (isPostgres ? "Neon PostgreSQL" : "agentreliability.db")}
             </span>
           </div>
           <div className="flex items-center justify-between text-[11px] text-slate-400">
-            <span>Local Instance:</span>
+            <span>{isCloud ? "Environment:" : "Local Instance:"}</span>
             <span className="font-mono text-slate-300">
-              {systemInfo?.instance_id || "ar_inst_local"}
+              {isCloud ? "Cloud Production" : (systemInfo?.instance_id || "ar_inst_local")}
             </span>
           </div>
           <div className="text-[10px] text-slate-500 truncate" title={systemInfo?.database_path}>
-            Storage: {systemInfo?.database_path || "backend/agentreliability.db"}
+            Storage: {isPostgres ? "Persistent Managed PostgreSQL (Neon)" : (systemInfo?.database_path || "backend/agentreliability.db")}
           </div>
         </div>
 

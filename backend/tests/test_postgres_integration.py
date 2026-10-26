@@ -164,6 +164,7 @@ class PostgresHarnessCursor:
         return self._raw_cur.description
 
     def execute(self, sql: str, params: tuple | list | None = None):
+        self._cached_returning_row = None
         # Validate that if the query is for PostgreSQL, it uses %s placeholders, not ?
         s = sql.strip()
 
@@ -178,6 +179,10 @@ class PostgresHarnessCursor:
         if "ON CONFLICT DO NOTHING" in run_sql:
             run_sql = run_sql.replace("INSERT INTO", "INSERT OR IGNORE INTO")
             run_sql = run_sql.replace("ON CONFLICT DO NOTHING", "").strip()
+
+        if "setval(pg_get_serial_sequence" in run_sql:
+            run_sql = "SELECT 1"
+            params = None
 
         # Adapt Postgres DDL types for harness validation
         run_sql = re.sub(r"(?i)\bSERIAL\s+PRIMARY\s+KEY\b", "INTEGER PRIMARY KEY AUTOINCREMENT", run_sql)
@@ -198,6 +203,11 @@ class PostgresHarnessCursor:
             self.lastrowid = row_id
             self._cached_returning_row = (row_id,)
 
+        return self
+
+    def executemany(self, sql: str, seq_of_params: list | tuple):
+        for params in seq_of_params:
+            self.execute(sql, params)
         return self
 
     def fetchone(self):
@@ -242,6 +252,19 @@ class PostgresHarnessConnection:
 
     def rollback(self):
         self._raw_conn.rollback()
+
+    def transaction(self):
+        class HarnessTx:
+            def __init__(self, parent):
+                self._p = parent
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                if exc_type:
+                    self._p.rollback()
+                else:
+                    self._p.commit()
+        return HarnessTx(self)
 
     def close(self):
         self._raw_conn.close()

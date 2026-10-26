@@ -1,7 +1,7 @@
 """Pydantic schemas for project and API key management."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -39,6 +39,14 @@ class ProjectResponse(BaseModel):
     updated_at: Optional[str] = None
     archived_at: Optional[str] = None
 
+    @field_validator("created_at", "updated_at", "archived_at", mode="before")
+    def format_timestamps(cls, v: Any) -> Optional[str]:
+        if v is None:
+            return None
+        if hasattr(v, "isoformat"):
+            return v.isoformat()
+        return str(v)
+
 
 class ProjectWithKeyResponse(BaseModel):
     id: int
@@ -46,6 +54,12 @@ class ProjectWithKeyResponse(BaseModel):
     owner_id: Optional[int]
     created_at: str
     api_key: str  # Plaintext key returned ONCE at creation
+
+    @field_validator("created_at", mode="before")
+    def format_created_at(cls, v: Any) -> str:
+        if hasattr(v, "isoformat"):
+            return v.isoformat()
+        return str(v)
 
 
 class ApiKeyCreate(BaseModel):
@@ -66,6 +80,14 @@ class ApiKeyResponse(BaseModel):
     last_used_at: Optional[str] = None
     revoked_at: Optional[str] = None
 
+    @field_validator("created_at", "last_used_at", "revoked_at", mode="before")
+    def format_timestamps(cls, v: Any) -> Optional[str]:
+        if v is None:
+            return None
+        if hasattr(v, "isoformat"):
+            return v.isoformat()
+        return str(v)
+
 
 class ApiKeyCreatedResponse(BaseModel):
     id: int
@@ -73,5 +95,11 @@ class ApiKeyCreatedResponse(BaseModel):
     name: str
     key_prefix: str
     created_at: str
+
+    @field_validator("created_at", mode="before")
+    def format_created_at(cls, v: Any) -> str:
+        if hasattr(v, "isoformat"):
+            return v.isoformat()
+        return str(v)
     api_key: str  # Plaintext key returned ONCE at creation/rotation
 

@@ -19,4 +19,4 @@ services:
       - key: AGENTRELIABILITY_COOKIE_SAMESITE
         value: "none"
       - key: AGENTRELIABILITY_ALLOWED_ORIGINS
-        sync: false
+        value: "https://agentreliability-ai.vercel.app"

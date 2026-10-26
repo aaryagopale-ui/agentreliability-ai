@@ -30,7 +30,7 @@ def get_applied_postgres_versions(conn) -> Set[int]:
     init_postgres_migrations_table(conn)
     cur = conn.execute("SELECT version FROM schema_migrations")
     rows = cur.fetchall()
-    return {r[0] for r in rows}
+    return {int(r["version"] if (isinstance(r, dict) or hasattr(r, "keys")) else r[0]) for r in rows}
 
 
 def record_postgres_migration(conn, version: int, name: str) -> None:

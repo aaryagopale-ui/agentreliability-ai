@@ -1,6 +1,8 @@
 """FastAPI app. Run: uvicorn app.main:app --reload --port 8000"""
 import json
+import logging
 import os
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
@@ -41,18 +43,56 @@ async def lifespan(app: FastAPI):
     yield
 
 
+logger = logging.getLogger("agentreliability.main")
+
 app = FastAPI(title="AgentReliability AI", lifespan=lifespan)
 
 # Configurable CORS for multi-environment support (dev, staging, production)
-DEFAULT_ORIGINS = [
+DEFAULT_DEV_ORIGINS = [
     "http://localhost:5173", "http://127.0.0.1:5173",
     "http://localhost:5174", "http://127.0.0.1:5174",
     "http://localhost:5175", "http://127.0.0.1:5175",
 ]
-custom_origins = [
-    o.strip() for o in os.environ.get("AGENTRELIABILITY_ALLOWED_ORIGINS", "").split(",") if o.strip()
+
+PRODUCTION_FRONTEND_ORIGINS = [
+    "https://agentreliability-ai.vercel.app",
 ]
-origins = custom_origins if custom_origins else DEFAULT_ORIGINS
+
+
+def resolve_allowed_origins() -> list[str]:
+    """Resolve and sanitize allowed CORS origins without wildcards for credentials support."""
+    allowed = set()
+    # Always allow local dev origins
+    allowed.update(DEFAULT_DEV_ORIGINS)
+    # Always allow production Vercel frontend
+    allowed.update(PRODUCTION_FRONTEND_ORIGINS)
+
+    # Environment overrides (AGENTRELIABILITY_ALLOWED_ORIGINS, FRONTEND_URL, etc.)
+    env_origins_str = os.environ.get("AGENTRELIABILITY_ALLOWED_ORIGINS", "")
+    for env_val in [env_origins_str, os.environ.get("FRONTEND_URL"), os.environ.get("AGENTRELIABILITY_FRONTEND_URL")]:
+        if env_val:
+            for item in env_val.split(","):
+                cleaned = item.strip().rstrip("/")
+                if cleaned:
+                    allowed.add(cleaned)
+
+    return sorted(list(allowed))
+
+
+@app.middleware("http")
+async def preserve_cors_on_error_middleware(request: Request, call_next):
+    """Ensure that even unhandled exceptions (HTTP 500) return a structured response
+    that passes through CORSMiddleware, preserving Access-Control-Allow-Origin headers
+    so frontend clients receive clear diagnostic errors rather than misleading browser CORS blocks."""
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        logger.exception("Unhandled server exception processing %s %s: %s", request.method, request.url.path, exc)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error. Please check server logs or retry."},
+        )
+
 
 raw_regex = os.environ.get("AGENTRELIABILITY_ALLOWED_ORIGIN_REGEX")
 if raw_regex is not None:
@@ -64,7 +104,7 @@ else:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=resolve_allowed_origins(),
     allow_origin_regex=origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
@@ -83,19 +123,38 @@ app.include_router(demo_router)
 
 
 def get_instance_identity() -> dict:
-    db = database.db_path()
-    backend_dir = os.path.dirname(db)
-    root = os.path.dirname(backend_dir)
-    inst_id = os.environ.get("AGENTRELIABILITY_INSTANCE_ID")
-    if not inst_id:
-        import hashlib
-        inst_id = f"ar_inst_{hashlib.sha256(root.encode('utf-8')).hexdigest()[:12]}"
-    return {
-        "instance_id": inst_id,
-        "database_path": db,
-        "workspace_root": root,
-        "database_name": os.path.basename(db),
-    }
+    if database.is_postgres():
+        db_url = database.get_database_url() or ""
+        masked_url = re.sub(r":([^:@]+)@", ":****@", db_url)
+        db_name = "Neon PostgreSQL"
+        if "@" in masked_url:
+            host_part = masked_url.split("@")[-1].split("?")[0]
+            db_name = f"PostgreSQL ({host_part})"
+        inst_id = os.environ.get("AGENTRELIABILITY_INSTANCE_ID", "cloud_neon_prod")
+        return {
+            "instance_id": inst_id,
+            "database_engine": "postgres",
+            "database_name": db_name,
+            "database_path": masked_url,
+            "workspace_root": "cloud-hosted",
+            "environment": os.environ.get("AGENTRELIABILITY_ENV", "production"),
+        }
+    else:
+        db = database.db_path()
+        backend_dir = os.path.dirname(db)
+        root = os.path.dirname(backend_dir)
+        inst_id = os.environ.get("AGENTRELIABILITY_INSTANCE_ID")
+        if not inst_id:
+            import hashlib
+            inst_id = f"ar_inst_{hashlib.sha256(root.encode('utf-8')).hexdigest()[:12]}"
+        return {
+            "instance_id": inst_id,
+            "database_engine": "sqlite",
+            "database_name": os.path.basename(db),
+            "database_path": db,
+            "workspace_root": root,
+            "environment": os.environ.get("AGENTRELIABILITY_ENV", "development"),
+        }
 
 
 @app.get("/api/health")
@@ -131,9 +190,11 @@ def system_info():
         "version": "0.1.0",
         "status": "ok",
         "instance_id": identity["instance_id"],
+        "database_engine": identity["database_engine"],
+        "database_name": identity["database_name"],
         "database_path": identity["database_path"],
         "workspace_root": identity["workspace_root"],
-        "database_name": identity["database_name"],
+        "environment": identity["environment"],
         "multi_tenant": True,
         "auth_methods": ["api_key", "session_cookie"],
     }

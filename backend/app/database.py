@@ -137,6 +137,7 @@ class PostgresCursorWrapper:
         return self._cur.description
 
     def execute(self, sql: str, params: tuple | list | None = None) -> PostgresCursorWrapper:
+        self._cached_returning_row = None
         translated_sql, expects_returning = translate_query_for_postgres(sql)
         if params is not None:
             self._cur.execute(translated_sql, params)
@@ -146,8 +147,20 @@ class PostgresCursorWrapper:
         if expects_returning:
             row = self._cur.fetchone()
             if row is not None:
-                self.lastrowid = row[0]
+                if isinstance(row, dict):
+                    self.lastrowid = row.get("id") if "id" in row else (next(iter(row.values())) if row else None)
+                else:
+                    try:
+                        self.lastrowid = row[0]
+                    except (KeyError, TypeError, IndexError):
+                        self.lastrowid = row.get("id") if hasattr(row, "get") else None
                 self._cached_returning_row = row
+        return self
+
+    def executemany(self, sql: str, seq_of_params: list | tuple) -> PostgresCursorWrapper:
+        self._cached_returning_row = None
+        translated_sql, _ = translate_query_for_postgres(sql)
+        self._cur.executemany(translated_sql, seq_of_params)
         return self
 
     def fetchone(self) -> Optional[UnifiedRow]:
@@ -166,11 +179,19 @@ class PostgresCursorWrapper:
         if row is None:
             return None
         if isinstance(row, dict):
-            return UnifiedRow(row, tuple(row.values()))
+            clean_dict = {
+                k: (v.isoformat() if hasattr(v, "isoformat") else v)
+                for k, v in row.items()
+            }
+            return UnifiedRow(clean_dict, tuple(clean_dict.values()))
         if self._cur.description:
             col_names = [col.name for col in self._cur.description]
-            mapping = dict(zip(col_names, row))
-            return UnifiedRow(mapping, tuple(row))
+            clean_vals = [
+                v.isoformat() if hasattr(v, "isoformat") else v
+                for v in row
+            ]
+            mapping = dict(zip(col_names, clean_vals))
+            return UnifiedRow(mapping, tuple(clean_vals))
         return row
 
     def __iter__(self):
@@ -179,6 +200,21 @@ class PostgresCursorWrapper:
 
     def close(self) -> None:
         self._cur.close()
+
+
+class PostgresTransactionWrapper:
+    """Transaction context manager providing psycopg 3 .transaction() parity."""
+    def __init__(self, conn: PostgresConnectionWrapper):
+        self._conn = conn
+
+    def __enter__(self) -> PostgresTransactionWrapper:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if exc_type is not None:
+            self._conn.rollback()
+        else:
+            self._conn.commit()
 
 
 class PostgresConnectionWrapper:
@@ -201,6 +237,12 @@ class PostgresConnectionWrapper:
 
     def close(self) -> None:
         self._conn.close()
+
+    def transaction(self) -> Any:
+        """Return a transaction context manager compatible with psycopg 3."""
+        if hasattr(self._conn, "transaction"):
+            return self._conn.transaction()
+        return PostgresTransactionWrapper(self)
 
     def __enter__(self) -> PostgresConnectionWrapper:
         self._conn.__enter__()

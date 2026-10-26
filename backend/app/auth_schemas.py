@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Any, Optional
 from pydantic import BaseModel, Field, field_validator
 
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
@@ -41,6 +41,12 @@ class UserResponse(BaseModel):
     email: str
     name: str
     created_at: str
+
+    @field_validator("created_at", mode="before")
+    def format_created_at(cls, v: Any) -> str:
+        if hasattr(v, "isoformat"):
+            return v.isoformat()
+        return str(v)
 
 
 class ForgotPasswordRequest(BaseModel):

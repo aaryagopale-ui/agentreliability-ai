@@ -261,20 +261,20 @@ function NavigationMenu({
         ))}
       </nav>
 
-      {/* Local Instance & Database Status */}
+      {/* Database & Instance Status */}
       <div className="border-t border-slate-800/60 px-3 py-2 bg-slate-950/20">
         <div className="flex items-center justify-between text-[11px] text-slate-400">
           <div className="flex items-center gap-1.5 truncate">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0"></span>
             <span className="truncate font-medium text-slate-300">
-              {systemInfo?.database_name || "SQLite Database"}
+              {systemInfo?.database_name || (systemInfo?.database_engine === "postgres" ? "Neon PostgreSQL" : "SQLite Database")}
             </span>
           </div>
           <span
-            title={systemInfo?.database_path || "Local SQLite database"}
+            title={systemInfo?.database_path || (systemInfo?.database_engine === "postgres" ? "Neon Managed PostgreSQL" : "Local SQLite database")}
             className="rounded bg-slate-800/80 px-1.5 py-0.5 text-[9px] font-mono text-slate-400 border border-slate-700/50 shrink-0"
           >
-            {systemInfo?.instance_id ? systemInfo.instance_id.slice(0, 15) : "local"}
+            {systemInfo?.database_engine === "postgres" ? "postgres" : (systemInfo?.instance_id ? systemInfo.instance_id.slice(0, 15) : "local")}
           </span>
         </div>
       </div>
@@ -429,26 +429,34 @@ function EmptyProjectState({
           <div className="flex items-center justify-between text-slate-300 font-medium">
             <span className="flex items-center gap-1.5">
               <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
-              Connected Local Database:
+              {systemInfo?.database_engine === "postgres" ? "Connected Database:" : "Connected Local Database:"}
             </span>
-            <code className="text-emerald-400 font-mono text-[11px]">{systemInfo?.database_name || "agentreliability.db"}</code>
+            <code className="text-emerald-400 font-mono text-[11px]">{systemInfo?.database_name || (systemInfo?.database_engine === "postgres" ? "Neon PostgreSQL" : "agentreliability.db")}</code>
           </div>
           <div className="flex items-center justify-between text-slate-400 text-[11px]">
-            <span>Instance Identifier:</span>
-            <code className="text-indigo-300 font-mono">{systemInfo?.instance_id || "ar_inst_local"}</code>
+            <span>{systemInfo?.database_engine === "postgres" ? "Deployment:" : "Instance Identifier:"}</span>
+            <code className="text-indigo-300 font-mono">{systemInfo?.database_engine === "postgres" ? "Cloud Production" : (systemInfo?.instance_id || "ar_inst_local")}</code>
           </div>
           <div className="text-[10px] text-slate-500 truncate" title={systemInfo?.database_path}>
-            Storage: {systemInfo?.database_path || "backend/agentreliability.db"}
+            Storage: {systemInfo?.database_path || (systemInfo?.database_engine === "postgres" ? "Persistent Managed PostgreSQL (Neon)" : "backend/agentreliability.db")}
           </div>
-          <p className="text-[11px] text-slate-400 pt-1.5 border-t border-slate-800/80 leading-relaxed">
-            <strong>Local Isolation Policy:</strong> AgentReliability stores accounts, projects, baselines, and traces in your current installation's local SQLite database. Independent local installations (e.g. running on different ports or extracted in separate folders) maintain completely isolated databases and <strong>do not synchronize accounts or projects based on email alone</strong>.
-          </p>
-          <p className="text-[10px] text-slate-500">
-            If you created projects in another installation, import them using:
-            <code className="block mt-1 text-slate-300 bg-slate-900 p-1.5 rounded font-mono text-[10px]">
-              agentreliability import-db --source &lt;path-to-other-agentreliability.db&gt;
-            </code>
-          </p>
+          {systemInfo?.database_engine !== "postgres" ? (
+            <>
+              <p className="text-[11px] text-slate-400 pt-1.5 border-t border-slate-800/80 leading-relaxed">
+                <strong>Local Isolation Policy:</strong> AgentReliability stores accounts, projects, baselines, and traces in your current installation's local SQLite database. Independent local installations (e.g. running on different ports or extracted in separate folders) maintain completely isolated databases and <strong>do not synchronize accounts or projects based on email alone</strong>.
+              </p>
+              <p className="text-[10px] text-slate-500">
+                If you created projects in another installation, import them using:
+                <code className="block mt-1 text-slate-300 bg-slate-900 p-1.5 rounded font-mono text-[10px]">
+                  agentreliability import-db --source &lt;path-to-other-agentreliability.db&gt;
+                </code>
+              </p>
+            </>
+          ) : (
+            <p className="text-[11px] text-slate-400 pt-1.5 border-t border-slate-800/80 leading-relaxed">
+              <strong>Cloud Persistence:</strong> Your projects, test runs, Golden Baselines, and traces are securely persisted in Neon PostgreSQL.
+            </p>
+          )}
         </div>
       </div>
     </div>
