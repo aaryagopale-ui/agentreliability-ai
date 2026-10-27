@@ -16,6 +16,8 @@ import Login from "./pages/auth/Login.jsx";
 import Register from "./pages/auth/Register.jsx";
 import ForgotPassword from "./pages/auth/ForgotPassword.jsx";
 import ResetPassword from "./pages/auth/ResetPassword.jsx";
+import DemoBanner from "./components/DemoBanner.jsx";
+import { isDemoMode } from "./demo/isDemoMode.js";
 import { getMe, listProjects, createProject, logout, setActiveProjectId, getSystemInfo, seedDemoData } from "./api.js";
 import { Button } from "./ui.jsx";
 
@@ -265,16 +267,20 @@ function NavigationMenu({
       <div className="border-t border-slate-800/60 px-3 py-2 bg-slate-950/20">
         <div className="flex items-center justify-between text-[11px] text-slate-400">
           <div className="flex items-center gap-1.5 truncate">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+            <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${isDemoMode() ? "bg-indigo-400" : "bg-emerald-400"}`}></span>
             <span className="truncate font-medium text-slate-300">
-              {systemInfo?.database_name || (systemInfo?.database_engine === "postgres" ? "Neon PostgreSQL" : "SQLite Database")}
+              {isDemoMode()
+                ? "Public Demo Store"
+                : (systemInfo?.database_name || (systemInfo?.database_engine === "postgres" ? "Neon PostgreSQL" : "SQLite Database"))}
             </span>
           </div>
           <span
-            title={systemInfo?.database_path || (systemInfo?.database_engine === "postgres" ? "Neon Managed PostgreSQL" : "Local SQLite database")}
+            title={systemInfo?.database_path || "Database"}
             className="rounded bg-slate-800/80 px-1.5 py-0.5 text-[9px] font-mono text-slate-400 border border-slate-700/50 shrink-0"
           >
-            {systemInfo?.database_engine === "postgres" ? "postgres" : (systemInfo?.instance_id ? systemInfo.instance_id.slice(0, 15) : "local")}
+            {isDemoMode()
+              ? "demo"
+              : (systemInfo?.database_engine === "postgres" ? "postgres" : (systemInfo?.instance_id ? systemInfo.instance_id.slice(0, 15) : "local"))}
           </span>
         </div>
       </div>
@@ -283,12 +289,19 @@ function NavigationMenu({
       <div className="border-t border-slate-800 p-3 bg-slate-950/40">
         <div className="flex items-center justify-between gap-2">
           <div className="truncate">
-            <div className="truncate text-xs font-semibold text-slate-200">{user?.name}</div>
+            <div className="truncate text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+              <span>{user?.name}</span>
+              {isDemoMode() && (
+                <span className="rounded bg-indigo-500/20 px-1 py-0.5 text-[9px] font-medium text-indigo-300 border border-indigo-500/40">
+                  Demo
+                </span>
+              )}
+            </div>
             <div className="truncate text-[11px] text-slate-500">{user?.email}</div>
           </div>
           <button
             onClick={onLogout}
-            title="Sign out"
+            title={isDemoMode() ? "Reset demo state" : "Sign out"}
             className="flex-shrink-0 rounded-lg p-1.5 text-xs text-slate-400 hover:bg-slate-800 hover:text-red-400 transition"
           >
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -583,6 +596,7 @@ export default function App() {
 
     // Handle 401 events dispatched from api.js
     function handleUnauthorized() {
+      if (isDemoMode()) return; // Never show login screen in demo mode
       setUser(null);
       setActiveProjectId(null);
       setAuthScreen("login");
@@ -623,6 +637,15 @@ export default function App() {
       await logout();
     } catch {
       // Proceed with local logout regardless of network response
+    }
+    if (isDemoMode()) {
+      // In demo mode, reset to initial demo state
+      const u = await getMe();
+      setUser(u);
+      const projs = await fetchProjects(u);
+      if (projs.length > 0) handleSelectProject(projs[0]);
+      setTab("overview");
+      return;
     }
     setUser(null);
     setActiveProjectId(null);
@@ -757,9 +780,26 @@ export default function App() {
     docs: <HelpDocs key={currentProject?.id} goTo={setTab} />,
   };
 
+  const isDemo = isDemoMode();
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 md:flex">
-      {/* Mobile Top Navigation Bar */}
+    <div className="min-h-screen bg-slate-950 text-slate-200 flex flex-col">
+      {isDemo && (
+        <DemoBanner
+          currentProject={currentProject}
+          projects={projects}
+          onSelectProject={handleSelectProject}
+          onResetDemo={async () => {
+            const u = await getMe();
+            setUser(u);
+            const projs = await fetchProjects(u);
+            if (projs.length > 0) handleSelectProject(projs[0]);
+            setTab("overview");
+          }}
+        />
+      )}
+      <div className="flex-1 md:flex">
+        {/* Mobile Top Navigation Bar */}
       <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-4 py-3 md:hidden sticky top-0 z-30">
         <div className="flex items-center gap-2.5">
           <button
@@ -894,6 +934,7 @@ export default function App() {
           pages[tab] || pages.overview
         )}
       </main>
+      </div>
     </div>
   );
 }

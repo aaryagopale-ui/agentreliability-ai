@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { listProjectKeys, createProjectKey, revokeProjectKey, rotateProjectKey } from "../api.js";
+import { listProjectKeys, createProjectKey, revokeProjectKey, rotateProjectKey, isDemoMode } from "../api.js";
 import { Button, Card, Empty, ErrorBox, PageTitle, Badge } from "../ui.jsx";
 
 export default function ApiKeys({ currentProject }) {
@@ -94,8 +94,28 @@ export default function ApiKeys({ currentProject }) {
         title="Project API Keys"
         subtitle={`Manage authentication keys for ${currentProject?.name || "your project"}.`}
       >
-        <Button onClick={() => setShowCreateModal(true)}>+ Generate New API Key</Button>
+        <Button
+          onClick={() => setShowCreateModal(true)}
+          disabled={isDemoMode()}
+          title={isDemoMode() ? "Disabled in Public Demo mode" : undefined}
+        >
+          {isDemoMode() ? "Key Generation (Demo Protected)" : "+ Generate New API Key"}
+        </Button>
       </PageTitle>
+
+      {isDemoMode() && (
+        <div className="mb-6 rounded-xl border border-indigo-500/30 bg-indigo-950/20 p-4 text-xs text-indigo-200 space-y-1">
+          <div className="flex items-center gap-2 font-bold text-indigo-300">
+            <svg className="h-4 w-4 shrink-0 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+            <span>Public Demo Mode — Read-Only Key Protection</span>
+          </div>
+          <p className="text-[11px] text-slate-300 leading-relaxed">
+            Live API key generation and token revelation are disabled in this public demonstration environment. The keys listed below are synthetic demonstration fixtures and cannot be used to authenticate external API calls.
+          </p>
+        </div>
+      )}
 
       {error && <div className="mb-6"><ErrorBox error={error} /></div>}
 
@@ -181,19 +201,25 @@ export default function ApiKeys({ currentProject }) {
                       <td className="py-3 text-right">
                         {!isRevoked && (
                           <div className="flex items-center justify-end gap-2">
-                            <button
-                              onClick={() => setConfirmRotateKey(k)}
-                              className="text-xs text-indigo-400 hover:text-indigo-300 hover:underline"
-                            >
-                              Rotate
-                            </button>
-                            <span className="text-slate-600">|</span>
-                            <button
-                              onClick={() => setConfirmRevokeKey(k)}
-                              className="text-xs text-red-400 hover:text-red-300 hover:underline"
-                            >
-                              Revoke
-                            </button>
+                            {isDemoMode() ? (
+                              <span className="text-xs text-slate-500 italic">Protected (Demo)</span>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => setConfirmRotateKey(k)}
+                                  className="text-xs text-indigo-400 hover:text-indigo-300 hover:underline"
+                                >
+                                  Rotate
+                                </button>
+                                <span className="text-slate-600">|</span>
+                                <button
+                                  onClick={() => setConfirmRevokeKey(k)}
+                                  className="text-xs text-red-400 hover:text-red-300 hover:underline"
+                                >
+                                  Revoke
+                                </button>
+                              </>
+                            )}
                           </div>
                         )}
                         {isRevoked && (
