@@ -61,7 +61,24 @@ export function Button({ variant = "primary", className = "", ...props }) {
   );
 }
 
-export function StatCard({ label, value, tone = "text-slate-100" }) {
+export function StatCard({ label, value, tone = "text-slate-100", onClick }) {
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className="w-full text-left transition hover:ring-2 hover:ring-indigo-500/50 rounded-xl focus:outline-none cursor-pointer group"
+      >
+        <Card className="h-full">
+          <p className="text-sm text-slate-400 flex items-center justify-between">
+            <span>{label}</span>
+            <span className="text-slate-600 group-hover:text-indigo-400 text-xs transition">→</span>
+          </p>
+          <p className={`mt-1 text-3xl font-bold ${tone}`}>{value}</p>
+        </Card>
+      </button>
+    );
+  }
   return (
     <Card>
       <p className="text-sm text-slate-400">{label}</p>

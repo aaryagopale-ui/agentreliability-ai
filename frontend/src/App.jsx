@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Overview from "./pages/Overview.jsx";
 import LiveMonitoring from "./pages/LiveMonitoring.jsx";
 import Executions from "./pages/Executions.jsx";
@@ -546,20 +546,31 @@ export default function App() {
     return "Overview";
   }, [tab]);
 
+  // Stable refs to prevent effect recreation loops
+  const userRef = useRef(user);
+  userRef.current = user;
+  const systemInfoRef = useRef(systemInfo);
+  systemInfoRef.current = systemInfo;
+
   // Fetch projects and set active project with persistence
-  const fetchProjects = useCallback(async (activeUser = user, activeInstanceId = systemInfo?.instance_id) => {
+  const fetchProjects = useCallback(async (activeUser, activeInstanceId) => {
     try {
+      const effUser = activeUser !== undefined ? activeUser : userRef.current;
+      const effInstanceId =
+        activeInstanceId !== undefined
+          ? activeInstanceId
+          : systemInfoRef.current?.instance_id;
       const projs = await listProjects();
       setProjects(projs);
       if (projs.length > 0) {
-        const uid = activeUser?.id;
-        const storedId = getStoredProjectId(activeInstanceId, uid);
+        const uid = effUser?.id;
+        const storedId = getStoredProjectId(effInstanceId, uid);
         const storedMatch = storedId ? projs.find((p) => p.id === storedId) : null;
         setCurrentProject((prev) => {
           const prevMatch = prev ? projs.find((p) => p.id === prev.id) : null;
           const selected = storedMatch || prevMatch || projs[0];
           setActiveProjectId(selected.id);
-          if (uid) setStoredProjectId(activeInstanceId, uid, selected.id);
+          if (uid) setStoredProjectId(effInstanceId, uid, selected.id);
           return selected;
         });
       } else {
@@ -570,7 +581,7 @@ export default function App() {
     } catch {
       return [];
     }
-  }, [user, systemInfo?.instance_id]);
+  }, []);
 
   // Initialize session on mount
   useEffect(() => {

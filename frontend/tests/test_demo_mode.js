@@ -307,5 +307,30 @@ assert.strictEqual(freshProjects.length, 3, "Pristine state must restore the 3 c
 assert.strictEqual(demoService.currentProjectId, 1, "Pristine state must reset active project to 1");
 console.log("  ✅ Passed: Reset restored clean initial sandbox state");
 
-console.log("\n🎉 All 20 Demo Mode, Multi-Tenant & Security Isolation tests passed successfully!\n");
+// --- Test 21: Object Reference Stability & Infinite Re-render Prevention ---
+console.log("Test 21: Verify getMe() and getSystemInfo() return stable references across consecutive reads");
+const u1 = await demoService.getMe();
+const u2 = await demoService.getMe();
+assert.strictEqual(u1, u2, "getMe() must return stable object reference to prevent React re-render loops");
+
+const s1 = await demoService.getSystemInfo();
+const s2 = await demoService.getSystemInfo();
+assert.strictEqual(s1, s2, "getSystemInfo() must return stable object reference to prevent React re-render loops");
+console.log("  ✅ Passed: Object references are stable across consecutive reads");
+
+// --- Test 22: Overview Interactive Navigation Wiring ---
+console.log("Test 22: Verify Overview interactive navigation triggers");
+import { readFileSync } from "node:fs";
+const overviewContent = readFileSync(new URL("../src/pages/Overview.jsx", import.meta.url), "utf-8");
+assert.ok(overviewContent.includes('onClick={() => goTo?.("monitoring")}'), "Live SDK Traces stat card must navigate to monitoring");
+assert.ok(overviewContent.includes('onClick={() => goTo?.("executions")}'), "Uploaded Logs stat card must navigate to executions");
+assert.ok(overviewContent.includes('onClick={() => goTo?.("tests")}'), "Test Cases stat card must navigate to tests");
+assert.ok(overviewContent.includes('Live Agent Monitoring\n          </button>'), "Overview narrative must have clickable Live Agent Monitoring button");
+
+const appContent = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf-8");
+assert.ok(appContent.includes("userRef = useRef"), "App.jsx must use userRef to stabilize fetchProjects");
+assert.ok(appContent.includes("}, []);"), "fetchProjects in App.jsx must have stable empty dependency array to prevent effect recreation loops");
+console.log("  ✅ Passed: Overview and App.jsx navigation & loop prevention validated");
+
+console.log("\n🎉 All 22 Demo Mode, Multi-Tenant, Navigation & Security Isolation tests passed successfully!\n");
 

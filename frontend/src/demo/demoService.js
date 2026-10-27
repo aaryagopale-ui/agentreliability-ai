@@ -55,6 +55,8 @@ class DemoService {
 
   resetState() {
     demoStorage.clear();
+    this._cachedUser = null;
+    this._cachedSysInfo = null;
     this.state = demoStorage.load(getInitialState);
     return { message: "Demo state reset to initial sandbox" };
   }
@@ -73,11 +75,19 @@ class DemoService {
   // Auth & User
   // =========================================================================
   async getMe() {
-    return JSON.parse(JSON.stringify(this.state.user));
+    if (!this._cachedUser || this._cachedUserRaw !== this.state.user) {
+      this._cachedUser = Object.freeze(JSON.parse(JSON.stringify(this.state.user)));
+      this._cachedUserRaw = this.state.user;
+    }
+    return this._cachedUser;
   }
 
   async getSystemInfo() {
-    return JSON.parse(JSON.stringify(this.state.systemInfo));
+    if (!this._cachedSysInfo || this._cachedSysInfoRaw !== this.state.systemInfo) {
+      this._cachedSysInfo = Object.freeze(JSON.parse(JSON.stringify(this.state.systemInfo)));
+      this._cachedSysInfoRaw = this.state.systemInfo;
+    }
+    return this._cachedSysInfo;
   }
 
   async logout() {
