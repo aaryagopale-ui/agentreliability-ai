@@ -198,9 +198,9 @@ export const resetPassword = (body) => (isDemoMode() ? Promise.resolve({ message
 export const listProjects = () => (isDemoMode() ? demoService.listProjects() : request("/api/projects"));
 export const createProject = (body) => (isDemoMode() ? demoService.createProject(body) : request("/api/projects", json("POST", body)));
 export const getProject = (id) => (isDemoMode() ? demoService.getProject(id) : request(`/api/projects/${id}`));
-export const updateProject = (id, body) => (isDemoMode() ? demoService.getProject(id) : request(`/api/projects/${id}`, json("PATCH", body)));
-export const archiveProject = (id, body) => (isDemoMode() ? Promise.resolve({ message: "Demo mode" }) : request(`/api/projects/${id}`, json("DELETE", body)));
-export const claimProject = (id) => (isDemoMode() ? Promise.resolve({ message: "Demo mode" }) : request(`/api/projects/${id}/claim`, { method: "POST" }));
+export const updateProject = (id, body) => (isDemoMode() ? demoService.updateProject(id, body) : request(`/api/projects/${id}`, json("PATCH", body)));
+export const archiveProject = (id, body) => (isDemoMode() ? demoService.archiveProject(id, body) : request(`/api/projects/${id}`, json("DELETE", body)));
+export const claimProject = (id) => (isDemoMode() ? demoService.claimProject(id) : request(`/api/projects/${id}/claim`, { method: "POST" }));
 
 // ---- API Keys (Phase 5A) ----
 export const listProjectKeys = (projectId) => (isDemoMode() ? demoService.listProjectKeys(projectId) : request(`/api/projects/${projectId}/keys`));
@@ -212,11 +212,11 @@ export const rotateProjectKey = (projectId, keyId) =>
   (isDemoMode() ? demoService.createProjectKey(projectId) : request(`/api/projects/${projectId}/keys/${keyId}/rotate`, { method: "POST" }));
 
 // ---- Phase 1: Executions ----
-export const listExecutions = () => (isDemoMode() ? demoService.listTraceExecutions().then((r) => r.items) : request("/api/executions"));
-export const getExecution = (id) => (isDemoMode() ? demoService.getTraceExecution(id) : request(`/api/executions/${id}`));
+export const listExecutions = () => (isDemoMode() ? demoService.listExecutions() : request("/api/executions"));
+export const getExecution = (id) => (isDemoMode() ? demoService.getExecution(id) : request(`/api/executions/${id}`));
 export const uploadLog = (file) => {
   if (isDemoMode()) {
-    return Promise.resolve({ id: 101, message: "Demo upload simulated" });
+    return demoService.uploadLog(file);
   }
   const form = new FormData();
   form.append("file", file);
@@ -230,9 +230,9 @@ export const listTests = () => (isDemoMode() ? demoService.listTests() : request
 export const getTest = (id) => (isDemoMode() ? demoService.getTest(id) : request(`/api/tests/${id}`));
 export const createTest = (body) => (isDemoMode() ? demoService.createTest(body) : request("/api/tests", json("POST", body)));
 export const createTestFromExecution = (execId) =>
-  (isDemoMode() ? demoService.createTestFromTrace(execId) : request(`/api/tests/from-execution/${execId}`, { method: "POST" }));
-export const updateTest = (id, body) => (isDemoMode() ? demoService.getTest(id) : request(`/api/tests/${id}`, json("PUT", body)));
-export const deleteTest = (id) => (isDemoMode() ? Promise.resolve() : request(`/api/tests/${id}`, { method: "DELETE" }));
+  (isDemoMode() ? demoService.createTestFromExecution(execId) : request(`/api/tests/from-execution/${execId}`, { method: "POST" }));
+export const updateTest = (id, body) => (isDemoMode() ? demoService.updateTest(id, body) : request(`/api/tests/${id}`, json("PUT", body)));
+export const deleteTest = (id) => (isDemoMode() ? demoService.deleteTest(id) : request(`/api/tests/${id}`, { method: "DELETE" }));
 export const runTest = (id) => (isDemoMode() ? demoService.runTest(id) : request(`/api/tests/${id}/run`, { method: "POST" }));
 export const runAllTests = () => (isDemoMode() ? demoService.runAllTests() : request("/api/tests/run-all", { method: "POST" }));
 export const listRuns = (testId) =>
@@ -268,10 +268,10 @@ export const listBaselines = (agentName) =>
 export const getBaseline = (id) => (isDemoMode() ? demoService.getBaseline(id) : request(`/api/baselines/${id}`));
 export const createBaseline = (body) => (isDemoMode() ? demoService.createBaseline(body) : request("/api/baselines", json("POST", body)));
 export const createBaselineVersion = (id, body) =>
-  (isDemoMode() ? Promise.resolve() : request(`/api/baselines/${id}/versions`, json("POST", body)));
+  (isDemoMode() ? demoService.createBaselineVersion(id, body) : request(`/api/baselines/${id}/versions`, json("POST", body)));
 export const listBaselineVersions = (id) => (isDemoMode() ? demoService.listBaselineVersions(id) : request(`/api/baselines/${id}/versions`));
 export const getBaselineVersion = (id, version) => (isDemoMode() ? demoService.getBaseline(id) : request(`/api/baselines/${id}/versions/${version}`));
-export const deleteBaseline = (id) => (isDemoMode() ? Promise.resolve() : request(`/api/baselines/${id}`, { method: "DELETE" }));
+export const deleteBaseline = (id) => (isDemoMode() ? demoService.deleteBaseline(id) : request(`/api/baselines/${id}`, { method: "DELETE" }));
 export const compareWithBaseline = (baselineId, body) =>
   (isDemoMode() ? demoService.compareWithBaseline(baselineId, body) : request(`/api/baselines/${baselineId}/compare`, json("POST", body)));
 export const compareTraces = (baselineTraceId, candidateTraceId, durationTolerancePct = 50.0) =>
@@ -283,12 +283,12 @@ export const compareTraces = (baselineTraceId, candidateTraceId, durationToleran
       ));
 
 // ---- Phase 6 Step 4: AI Failure Analysis & Diagnostics ----
-export const getOllamaStatus = () => (isDemoMode() ? Promise.resolve({ running: true, models: ["llama3:latest"] }) : request("/api/failure-analysis/ollama/status"));
+export const getOllamaStatus = () => (isDemoMode() ? demoService.getOllamaStatus() : request("/api/failure-analysis/ollama/status"));
 export const diagnoseExecution = (body) => (isDemoMode() ? demoService.diagnoseExecution(body) : request("/api/failure-analysis/diagnose", json("POST", body)));
 
 // ---- Phase 7: One-Click Demo Experience ----
-export const seedDemoData = () => (isDemoMode() ? Promise.resolve({ message: "Demo data active" }) : request("/api/demo/seed", json("POST", {})));
-export const getDemoStatus = () => (isDemoMode() ? Promise.resolve({ demo_loaded: true, traces_count: 3 }) : request("/api/demo/status"));
+export const seedDemoData = () => (isDemoMode() ? demoService.seedDemoData() : request("/api/demo/seed", json("POST", {})));
+export const getDemoStatus = () => (isDemoMode() ? demoService.getDemoStatus() : request("/api/demo/status"));
 
 // ---- System & Instance Diagnostics ----
 export const getSystemInfo = () => (isDemoMode() ? demoService.getSystemInfo() : request("/api/v1/system/info"));

@@ -17,6 +17,7 @@ import Register from "./pages/auth/Register.jsx";
 import ForgotPassword from "./pages/auth/ForgotPassword.jsx";
 import ResetPassword from "./pages/auth/ResetPassword.jsx";
 import DemoBanner from "./components/DemoBanner.jsx";
+import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import { isDemoMode } from "./demo/isDemoMode.js";
 import { getMe, listProjects, createProject, logout, setActiveProjectId, getSystemInfo, seedDemoData } from "./api.js";
 import { Button } from "./ui.jsx";
@@ -931,7 +932,9 @@ export default function App() {
             seedingDemo={seedingDemoState}
           />
         ) : (
-          pages[tab] || pages.overview
+          <ErrorBoundary key={tab} onNavigate={setTab}>
+            {pages[tab] || pages.overview}
+          </ErrorBoundary>
         )}
       </main>
       </div>
